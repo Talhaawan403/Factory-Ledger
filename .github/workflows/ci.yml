@@ -34,7 +34,7 @@ jobs:
         run: npm run test
 
       - name: Set up Java for Firebase Emulator
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
@@ -80,7 +80,7 @@ jobs:
           cache: 'npm'
 
       - name: Set up Java (JDK 21)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
