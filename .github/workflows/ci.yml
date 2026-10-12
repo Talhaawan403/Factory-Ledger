@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  validate:
+    name: Lint, Test & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linter (oxlint)
+        run: npm run lint
+
+      - name: Typecheck test sources
+        run: npm run typecheck:tests
+
+      - name: Run unit & regression tests (vitest)
+        run: npm run test
+
+      - name: Set up Java for Firebase Emulator
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Run Firestore security rules tests (emulator)
+        run: npm run test:rules
+
+      - name: Guard against ad-hoc profit aggregation
+        run: |
+          if grep -rn "reduce(.*calculateSettlement" src --include=*.ts --include=*.tsx | grep -v "src/utils/calculations.ts"; then
+            echo "Use calculateLedgerTotals() instead of summing calculateSettlement() by hand"
+            exit 1
+          fi
+
+      - name: Guard against raw adjustment fields in display code
+        run: |
+          if grep -rn "\.manualDeduction\|\.manualPremium" src/components src/utils/exportSharing.ts; then
+            echo "Use getEffectiveAdjustments() in display code"
+            exit 1
+          fi
+
+      - name: Guard against UTC date strings
+        run: |
+          if grep -rn "toISOString().split" src; then
+            echo "Use getTodayDateString() or toLocalDateString() from dateUtils"
+            exit 1
+          fi
+
+      - name: Typecheck and build production bundle
+        run: npm run build
+
+  android-debug:
+    name: Android Debug Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Set up Java (JDK 21)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web assets and sync Capacitor
+        run: |
+          npm run build
+          npx cap sync android
+
+      - name: Assemble Debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug

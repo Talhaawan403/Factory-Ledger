@@ -1,0 +1,232 @@
+{
+  "description": "Synthetic commercial settlement scenarios for regression testing. These are not factory-source documents and must not be used as real-world accounting validation.",
+  "tolerance": 1,
+  "slips": [
+    {
+      "id": "SLIP-001",
+      "source": "Commercial coal settlement slip (Formula 18/5 tax, caloric compliance)",
+      "inputs": {
+        "baseRate": 38000,
+        "manualDeduction": 500,
+        "commissionPerTon": 200,
+        "labReceivedWeight": 29.4,
+        "taxMethod": "formula_18_5",
+        "taxSalesPercent": 18,
+        "taxIncomePercent": 5,
+        "coalInputs": [{ "weight": 29.5, "purchaseRate": 25000 }],
+        "overheads": { "freight": 40000, "loading": 3000, "crush": 0, "royalty": 0, "other": 0 }
+      },
+      "paper": {
+        "adjustedRate": 37500,
+        "taxDeduction": 2212.50,
+        "payableRate": 35087.50,
+        "totalRevenue": 1031573
+      }
+    },
+    {
+      "id": "SLIP-002",
+      "source": "Factory slip with significant GCV penalty and flat withholding tax",
+      "inputs": {
+        "baseRate": 42000,
+        "targetGcv": 6000,
+        "labActualGcv": 5600,
+        "manualDeduction": 1400,
+        "manualPremium": 0,
+        "manualTax": 1500,
+        "taxMethod": "manual",
+        "labReceivedWeight": 26.85,
+        "coalInputs": [{ "weight": 27.0, "purchaseRate": 30000 }],
+        "overheads": { "freight": 35000, "loading": 2500, "crush": 0, "royalty": 0, "other": 0 }
+      },
+      "paper": {
+        "adjustedRate": 40600,
+        "taxDeduction": 1500,
+        "payableRate": 39100,
+        "totalRevenue": 1049835
+      }
+    },
+    {
+      "id": "SLIP-003",
+      "source": "Cement plant voucher with high caloric GCV bonus/premium",
+      "inputs": {
+        "baseRate": 36000,
+        "targetGcv": 5800,
+        "labActualGcv": 6150,
+        "manualDeduction": 0,
+        "manualPremium": 1200,
+        "manualTax": 1000,
+        "taxMethod": "manual",
+        "labReceivedWeight": 31.2,
+        "coalInputs": [{ "weight": 31.2, "purchaseRate": 26000 }],
+        "overheads": { "freight": 45000, "loading": 3000, "crush": 0, "royalty": 0, "other": 0 }
+      },
+      "paper": {
+        "adjustedRate": 37200,
+        "taxDeduction": 1000,
+        "payableRate": 36200,
+        "totalRevenue": 1129440
+      }
+    },
+    {
+      "id": "SLIP-004",
+      "source": "Flat standard rate with manual advance income tax voucher",
+      "inputs": {
+        "baseRate": 40000,
+        "manualDeduction": 0,
+        "manualPremium": 0,
+        "manualTax": 1800,
+        "taxMethod": "manual",
+        "labReceivedWeight": 28.5,
+        "coalInputs": [{ "weight": 28.5, "purchaseRate": 28000 }],
+        "overheads": { "freight": 42000, "loading": 2800, "crush": 0, "royalty": 0, "other": 0 }
+      },
+      "paper": {
+        "adjustedRate": 40000,
+        "taxDeduction": 1800,
+        "payableRate": 38200,
+        "totalRevenue": 1088700
+      }
+    },
+    {
+      "id": "SLIP-005",
+      "source": "Brokerage / commission delivery contract",
+      "inputs": {
+        "baseRate": 45000,
+        "commissionPerTon": 350,
+        "manualDeduction": 0,
+        "manualPremium": 0,
+        "manualTax": 2000,
+        "taxMethod": "manual",
+        "labReceivedWeight": 25.0,
+        "coalInputs": [{ "weight": 25.0, "purchaseRate": 32000 }],
+        "overheads": { "freight": 38000, "loading": 2500, "crush": 0, "royalty": 0, "other": 0 }
+      },
+      "paper": {
+        "adjustedRate": 45000,
+        "taxDeduction": 2000,
+        "payableRate": 42650,
+        "totalRevenue": 1066250
+      }
+    },
+    {
+      "id": "SLIP-006",
+      "source": "Logistics dispatch with weighbridge transit shortage loss",
+      "inputs": {
+        "baseRate": 35000,
+        "manualDeduction": 0,
+        "manualPremium": 0,
+        "manualTax": 0,
+        "taxMethod": "manual",
+        "labReceivedWeight": 28.5,
+        "coalInputs": [{ "weight": 30.0, "purchaseRate": 24000 }],
+        "overheads": { "freight": 45000, "loading": 3000, "crush": 0, "royalty": 0, "other": 0 }
+      },
+      "paper": {
+        "loadedWeight": 30.0,
+        "receivedWeight": 28.5,
+        "transitDiff": -1.5,
+        "lossPercentage": 5.0,
+        "payableRate": 35000,
+        "totalRevenue": 997500
+      }
+    },
+    {
+      "id": "SLIP-007",
+      "source": "Two-source coal recipe blending truck",
+      "inputs": {
+        "baseRate": 32000,
+        "manualDeduction": 0,
+        "manualPremium": 0,
+        "manualTax": 0,
+        "taxMethod": "manual",
+        "labReceivedWeight": 30.0,
+        "coalInputs": [
+          { "weight": 15.0, "purchaseRate": 24000 },
+          { "weight": 15.0, "purchaseRate": 22000 }
+        ],
+        "overheads": { "freight": 45000, "loading": 3000, "crush": 0, "royalty": 0, "other": 0 }
+      },
+      "paper": {
+        "loadedWeight": 30.0,
+        "receivedWeight": 30.0,
+        "sourcingCost": 690000,
+        "totalCost": 738000,
+        "payableRate": 32000,
+        "totalRevenue": 960000,
+        "netProfit": 222000
+      }
+    },
+    {
+      "id": "SLIP-008",
+      "source": "Triple-source recipe blending with crushing & royalty overheads",
+      "inputs": {
+        "baseRate": 31000,
+        "manualDeduction": 200,
+        "manualPremium": 0,
+        "manualTax": 0,
+        "taxMethod": "manual",
+        "labReceivedWeight": 30.0,
+        "coalInputs": [
+          { "weight": 10.0, "purchaseRate": 20000 },
+          { "weight": 10.0, "purchaseRate": 21000 },
+          { "weight": 10.0, "purchaseRate": 22000 }
+        ],
+        "overheads": { "freight": 50000, "loading": 3000, "crush": 6000, "royalty": 4000, "other": 0 }
+      },
+      "paper": {
+        "loadedWeight": 30.0,
+        "receivedWeight": 30.0,
+        "sourcingCost": 630000,
+        "totalCost": 693000,
+        "payableRate": 30800,
+        "totalRevenue": 924000,
+        "netProfit": 231000
+      }
+    },
+    {
+      "id": "SLIP-009",
+      "source": "In-transit dispatch (departed mine, awaiting weighbridge scale)",
+      "inputs": {
+        "baseRate": 37000,
+        "manualDeduction": 0,
+        "manualPremium": 0,
+        "manualTax": 0,
+        "taxMethod": "manual",
+        "labReceivedWeight": 0,
+        "coalInputs": [{ "weight": 28.0, "purchaseRate": 26000 }],
+        "overheads": { "freight": 40000, "loading": 3000, "crush": 0, "royalty": 0, "other": 0 }
+      },
+      "paper": {
+        "isPending": true,
+        "loadedWeight": 28.0,
+        "receivedWeight": 0,
+        "transitDiff": 0,
+        "lossPercentage": 0,
+        "totalRevenue": 0,
+        "aggregateRevenue": 0,
+        "aggregateProfit": 0
+      }
+    },
+    {
+      "id": "SLIP-010",
+      "source": "High moisture deduction with formula 18/5 tax settlement",
+      "inputs": {
+        "baseRate": 39000,
+        "manualDeduction": 800,
+        "manualPremium": 0,
+        "taxMethod": "formula_18_5",
+        "taxSalesPercent": 18,
+        "taxIncomePercent": 5,
+        "labReceivedWeight": 27.5,
+        "coalInputs": [{ "weight": 28.0, "purchaseRate": 27000 }],
+        "overheads": { "freight": 38000, "loading": 2800, "crush": 0, "royalty": 0, "other": 0 }
+      },
+      "paper": {
+        "adjustedRate": 38200,
+        "taxDeduction": 2253.80,
+        "payableRate": 35946.20,
+        "totalRevenue": 988521
+      }
+    }
+  ]
+}

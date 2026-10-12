@@ -1,0 +1,280 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Data model:
+    // users/{uid}/parties|dispatches|payments|expenses|pos|lots|mines/{id}
+    //   one entity per document; each has an id and updatedAt (epoch ms).
+    // users/{uid}/settings/config stores app settings; meta/sync stores the
+    // server sync timestamp. ledger/backup is read/delete-only legacy data.
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    // Check if the user is authenticated with Firebase Auth
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Check if the requesting user owns the resource by matching user ID
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function canAccessLedger(userId) {
+      return isOwner(userId);
+    }
+
+    // Keep clock-skewed clients from freezing a record and ensure old clients
+    // cannot bypass the stale-write guard by omitting updatedAt.
+    function hasValidUpdatedAt() {
+      return request.resource.data.updatedAt is number &&
+             request.resource.data.updatedAt <= request.time.toMillis() + 300000;
+    }
+
+    function isNotStaleUpdate() {
+      return !('updatedAt' in resource.data) ||
+             request.resource.data.updatedAt >= resource.data.updatedAt;
+    }
+
+    function idMatchesPath(documentId) {
+      return request.resource.data.id == documentId;
+    }
+
+    // Schema helpers. These reject broken data even when it comes from a
+    // modified client rather than the Factory Ledger UI. Bounds are deliberately
+    // generous: they catch corrupt/absurd input without imposing a business cap
+    // that could invalidate a legitimate historical record.
+    function hasText(field) {
+      return field in request.resource.data &&
+             request.resource.data[field] is string &&
+             request.resource.data[field].size() <= 5000;
+    }
+
+    function hasNonEmptyText(field) {
+      return hasText(field) && request.resource.data[field].size() > 0;
+    }
+
+    function hasDate(field) {
+      return hasText(field) &&
+             request.resource.data[field].matches('^\\d{4}-\\d{2}-\\d{2}$');
+    }
+
+    function hasNonNegativeNumber(field) {
+      return field in request.resource.data &&
+             request.resource.data[field] is number &&
+             request.resource.data[field] >= 0 &&
+             request.resource.data[field] <= 1000000000000;
+    }
+
+    function hasPositiveNumber(field) {
+      return hasNonNegativeNumber(field) && request.resource.data[field] > 0;
+    }
+
+    // Epoch-millisecond timestamps are already greater than the financial
+    // value ceiling above. Validate them separately and reject clocks more
+    // than five minutes ahead of Firestore's server time.
+    function hasEpochMillis(field) {
+      return field in request.resource.data &&
+             request.resource.data[field] is number &&
+             request.resource.data[field] >= 0 &&
+             request.resource.data[field] <= request.time.toMillis() + 300000;
+    }
+
+    function optionalNonNegativeNumber(field) {
+      return !(field in request.resource.data) || hasNonNegativeNumber(field);
+    }
+
+    function optionalEpochMillis(field) {
+      return !(field in request.resource.data) || hasEpochMillis(field);
+    }
+
+    function optionalText(field) {
+      return !(field in request.resource.data) || hasText(field);
+    }
+
+    function optionalDate(field) {
+      return !(field in request.resource.data) || hasDate(field);
+    }
+
+    function optionalNonEmptyText(field) {
+      return !(field in request.resource.data) || hasNonEmptyText(field);
+    }
+
+    function optionalBoolean(field) {
+      return !(field in request.resource.data) || request.resource.data[field] is bool;
+    }
+
+    function optionalEnum(field, allowed) {
+      return !(field in request.resource.data) || request.resource.data[field] in allowed;
+    }
+
+    // Sync occasionally writes a compact tombstone. It must remain legal so an
+    // offline deletion can reach the cloud, but it cannot be revived unless it
+    // satisfies the relevant full-record validator below.
+    function isSoftDelete() {
+      return 'deleted' in request.resource.data &&
+             request.resource.data.deleted == true &&
+             hasEpochMillis('deletedAt');
+    }
+
+    function hasValidOverheads() {
+      return 'overheads' in request.resource.data &&
+             request.resource.data.overheads is map &&
+             request.resource.data.overheads.keys().hasAll(['loading', 'freight', 'crush', 'royalty', 'other']) &&
+             request.resource.data.overheads.loading is number && request.resource.data.overheads.loading >= 0 && request.resource.data.overheads.loading <= 1000000000000 &&
+             request.resource.data.overheads.freight is number && request.resource.data.overheads.freight >= 0 && request.resource.data.overheads.freight <= 1000000000000 &&
+             request.resource.data.overheads.crush is number && request.resource.data.overheads.crush >= 0 && request.resource.data.overheads.crush <= 1000000000000 &&
+             request.resource.data.overheads.royalty is number && request.resource.data.overheads.royalty >= 0 && request.resource.data.overheads.royalty <= 1000000000000 &&
+             request.resource.data.overheads.other is number && request.resource.data.overheads.other >= 0 && request.resource.data.overheads.other <= 1000000000000;
+    }
+
+    function isValidParty() {
+      return isSoftDelete() ||
+             (hasNonEmptyText('name') && hasText('contactPerson') && hasText('phone') &&
+              hasText('address') && hasEpochMillis('createdAt') &&
+              optionalBoolean('isArchived'));
+    }
+
+    function isValidPayment() {
+      return isSoftDelete() ||
+             (hasNonEmptyText('partyId') && hasDate('date') && hasNonNegativeNumber('amount') &&
+              optionalText('referenceNote') &&
+              optionalEnum('type', ['received', 'paid']) &&
+              optionalEnum('mode', ['bank', 'cash', 'cheque', 'online']) &&
+              hasEpochMillis('createdAt'));
+    }
+
+    function isValidExpense() {
+      return isSoftDelete() ||
+             (hasDate('date') && hasPositiveNumber('amount') && hasNonEmptyText('description') &&
+              hasEpochMillis('createdAt') &&
+              optionalEnum('category', ['warehouse_rent', 'warehouse_labour', 'utilities', 'equipment', 'office', 'maintenance', 'transport', 'other']) &&
+              optionalEnum('paymentMode', ['bank', 'cash', 'cheque', 'online']) &&
+              optionalText('vendor') && optionalText('notes'));
+    }
+
+    function isValidPurchaseOrder() {
+      return isSoftDelete() ||
+             (hasNonEmptyText('partyId') && hasNonEmptyText('poNumber') &&
+              hasNonNegativeNumber('targetGcv') && hasNonNegativeNumber('baseRate') &&
+              hasNonNegativeNumber('commissionPerTon') && hasEpochMillis('createdAt') &&
+              'isActive' in request.resource.data && request.resource.data.isActive is bool &&
+              optionalNonNegativeNumber('totalTons') && optionalText('notes') &&
+              optionalEnum('gcvAdjustment', ['manual', 'prorata']) &&
+              optionalEnum('gcvAdjustmentRounding', ['rupee', 'paisa']));
+    }
+
+    function isValidLot() {
+      return isSoftDelete() ||
+             (hasNonEmptyText('supplier') && hasDate('date') &&
+              hasPositiveNumber('billedWeight') && hasPositiveNumber('receivedWeight') &&
+              hasPositiveNumber('purchaseRate') && hasNonNegativeNumber('landedRate') &&
+              hasEpochMillis('createdAt') &&
+              optionalNonEmptyText('mineId') && optionalText('mineName') &&
+              optionalNonNegativeNumber('loadingCost') && optionalNonNegativeNumber('freightCost'));
+    }
+
+    function isValidMine() {
+      return isSoftDelete() ||
+             (hasNonEmptyText('name') && hasNonNegativeNumber('ratePerTon') &&
+              hasEpochMillis('createdAt') && optionalText('location') && optionalText('notes'));
+    }
+
+    function isValidDispatch() {
+      return isSoftDelete() ||
+             (hasNonEmptyText('partyId') && hasDate('date') && hasNonEmptyText('truckNumber') &&
+              hasNonEmptyText('factoryName') && hasNonNegativeNumber('targetGcv') &&
+              hasNonNegativeNumber('baseRate') && hasNonNegativeNumber('labActualGcv') &&
+              hasNonNegativeNumber('labReceivedWeight') && hasNonNegativeNumber('labSulphur') &&
+              hasEpochMillis('createdAt') && hasValidOverheads() &&
+              'coalInputs' in request.resource.data && request.resource.data.coalInputs is list &&
+              request.resource.data.coalInputs.size() <= 30 &&
+              optionalNonEmptyText('poId') && optionalNonNegativeNumber('commissionPerTon') &&
+              optionalEnum('gcvAdjustment', ['manual', 'prorata']) &&
+              optionalEnum('gcvAdjustmentRounding', ['rupee', 'paisa']) &&
+              optionalEnum('taxMethod', ['manual', 'formula_18_5']) &&
+              optionalEnum('status', ['pending', 'settled']) &&
+              optionalEpochMillis('settledAt') && optionalDate('settledDate'));
+    }
+
+    function isSafeSettings() {
+      return !('pinHash' in request.resource.data) &&
+             !('pinLength' in request.resource.data) &&
+             !('lockTimeout' in request.resource.data) &&
+             !('appLockEnabled' in request.resource.data);
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // Strictly isolate data per authenticated Google user
+    match /users/{userId} {
+      // Granular subcollections with stale-write protection
+      match /parties/{partyId} {
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(partyId) && isValidParty();
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(partyId) && isNotStaleUpdate() && isValidParty();
+      }
+
+      match /dispatches/{dispatchId} {
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(dispatchId) && isValidDispatch();
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(dispatchId) && isNotStaleUpdate() && isValidDispatch();
+      }
+
+      match /payments/{paymentId} {
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(paymentId) && isValidPayment();
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(paymentId) && isNotStaleUpdate() && isValidPayment();
+      }
+
+      match /expenses/{expenseId} {
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(expenseId) && isValidExpense();
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(expenseId) && isNotStaleUpdate() && isValidExpense();
+      }
+
+      match /pos/{poId} {
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(poId) && isValidPurchaseOrder();
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(poId) && isNotStaleUpdate() && isValidPurchaseOrder();
+      }
+
+      match /lots/{lotId} {
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(lotId) && isValidLot();
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(lotId) && isNotStaleUpdate() && isValidLot();
+      }
+
+      match /mines/{mineId} {
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(mineId) && isValidMine();
+        allow update: if canAccessLedger(userId) && hasValidUpdatedAt() && idMatchesPath(mineId) && isNotStaleUpdate() && isValidMine();
+      }
+
+      match /settings/{settingId} {
+        allow read, delete: if canAccessLedger(userId);
+        allow create: if canAccessLedger(userId) && settingId == 'config' && hasValidUpdatedAt() && isSafeSettings();
+        allow update: if canAccessLedger(userId) && settingId == 'config' && hasValidUpdatedAt() && isNotStaleUpdate() && isSafeSettings();
+      }
+
+      match /meta/{metaId} {
+        allow read, write: if canAccessLedger(userId);
+      }
+
+      // Legacy single-document backup path (migration/cleanup only)
+      match /ledger/{document} {
+        allow read, delete: if canAccessLedger(userId);
+      }
+    }
+
+    // Default Deny: All other unmapped paths are completely locked down
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
