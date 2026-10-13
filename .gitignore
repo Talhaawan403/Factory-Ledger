@@ -6,6 +6,7 @@ node_modules/
 # Production & Build outputs
 dist/
 dist-ssr/
+dev-dist/
 build/
 *.local
 *.tsbuildinfo
@@ -31,6 +32,7 @@ GoogleService-Info.plist
 user_screenshot.*
 *.jpg
 *.png
+!public/pwa-icon-*.png
 *.jpeg
 *.webm
 *.mp4
@@ -54,6 +56,7 @@ CODE_Reviewer-Report.md
 Solved-Code_reviewer_issue.md
 AGENTS.md
 Gemini*
+LOST_CHAT.*
 PRODUCTION_READINESS_FIXES.md
 PRODUCTION_READINESS_AUDIT_*.md
 CODEX*

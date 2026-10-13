@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useRef, type CSSProperties } from 'react';
 import { Outlet, NavLink, useLocation, useNavigate } from 'react-router-dom';
-import { getSettings, saveSettings } from '../lib/db';
+import { getSettings } from '../lib/db';
 import type { AppSettings } from '../types';
 import { useRefraction } from '../hooks/useRefraction';
 import { Capacitor } from '@capacitor/core';
@@ -13,19 +13,12 @@ import {
   Package,
   FileSpreadsheet,
   Settings as SettingsIcon,
-  Wifi,
-  Sun,
-  Moon,
-  Smartphone,
-  Maximize2,
   Check,
-  Volume2,
-  VolumeX,
-  Palette,
   RefreshCw,
   CircleAlert
 } from 'lucide-react';
 import IOSAppLockScreen from './IOSAppLockScreen';
+import PWAInstallPrompt from './PWAInstallPrompt';
 import { recordActivity, evaluateLockOnResume, purgeRemovedRecoveryKeyArtifacts } from '../utils/securityLock';
 import { syncManager } from '../lib/syncManager';
 import {
@@ -34,6 +27,7 @@ import {
   getPullToSyncProgress,
   shouldTriggerPullToSync,
 } from '../utils/pullToSync';
+import { getWebShellMode } from '../utils/webShell';
 
 const ACCENT_PRESETS = [
   { id: 'blue', label: 'Sapphire', color: '#007AFF', className: '' },
@@ -50,13 +44,10 @@ type ToastTone = 'success' | 'info' | 'error';
 export default function Layout() {
   const isNative = Capacitor.isNativePlatform();
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [currentTime, setCurrentTime] = useState('');
-  const [isFullscreen, setIsFullscreen] = useState(isNative);
+  const [activeAccent] = useState(() => localStorage.getItem('coal_accent_theme') || 'blue');
   const [toastNotice, setToastNotice] = useState<{ message: string; tone: ToastTone } | null>(null);
   const [pullDistance, setPullDistance] = useState(0);
   const [pullPhase, setPullPhase] = useState<PullSyncPhase>('idle');
-  const [activeAccent, setActiveAccent] = useState(() => localStorage.getItem('coal_accent_theme') || 'blue');
-  const [soundEnabled, setSoundEnabled] = useState(() => localStorage.getItem('coal_sound_enabled') !== 'false');
   const liquidGlass = true;
   const navRef = useRef<HTMLElement>(null);
   const viewportRef = useRef<HTMLElement>(null);
@@ -64,6 +55,7 @@ export default function Layout() {
   const pullPhaseRef = useRef<PullSyncPhase>('idle');
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pullResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useRefraction(navRef, liquidGlass, {
     radius: GLASS_RADIUS,
     bezel: 14,
@@ -400,51 +392,6 @@ export default function Layout() {
     };
   }, [settings?.theme]);
 
-  // Live Status Bar Time
-  useEffect(() => {
-    const updateTime = () => {
-      const now = new Date();
-      let hours = now.getHours();
-      const minutes = now.getMinutes().toString().padStart(2, '0');
-      hours = hours % 12 || 12;
-      setCurrentTime(`${hours}:${minutes}`);
-    };
-    updateTime();
-    const timer = setInterval(updateTime, 10000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const toggleTheme = async () => {
-    if (!settings) return;
-    const currentTheme = settings.theme || 'light';
-    const nextTheme: 'light' | 'dark' | 'system' =
-      currentTheme === 'light' ? 'dark' : currentTheme === 'dark' ? 'system' : 'light';
-    const updated: AppSettings = { ...settings, theme: nextTheme };
-    setSettings(updated);
-    await saveSettings(updated);
-    playPopSound();
-    const label =
-      nextTheme === 'system' ? 'System Theme' : nextTheme === 'dark' ? 'Dark Mode' : 'Light Mode';
-    showToast(`Switched to ${label}`);
-  };
-
-  const cycleAccent = () => {
-    const currentIndex = ACCENT_PRESETS.findIndex(p => p.id === activeAccent);
-    const nextPreset = ACCENT_PRESETS[(currentIndex + 1) % ACCENT_PRESETS.length];
-    setActiveAccent(nextPreset.id);
-    localStorage.setItem('coal_accent_theme', nextPreset.id);
-    playPopSound();
-    showToast(`Accent set to ${nextPreset.label}`);
-  };
-
-  const toggleSound = () => {
-    const nextVal = !soundEnabled;
-    setSoundEnabled(nextVal);
-    localStorage.setItem('coal_sound_enabled', String(nextVal));
-    if (nextVal) playSuccessSound();
-    showToast(nextVal ? 'Sound Feedback Enabled' : 'Sound Muted');
-  };
-
   // Active 5-Tab detection
   const isSummary = location.pathname === '/';
   const isParties = location.pathname.startsWith('/parties') && !location.pathname.includes('/dispatch');
@@ -462,132 +409,12 @@ export default function Layout() {
         : pullPhase === 'error'
           ? 'Sync unavailable'
           : 'Pull to sync';
+  const shellMode = getWebShellMode(isNative);
 
   return (
-    <div className={`device-stage ${isFullscreen || isNative ? 'fullscreen-mode' : ''}`}>
-      {/* ── Top Simulator Toolbar (Desktop) ── */}
-      {!isNative && (
-        <aside aria-label="Simulator Controls" className="simulator-toolbar hidden sm:flex">
-          <button
-            onClick={() => {
-              setIsFullscreen(!isFullscreen);
-              playPopSound();
-            }}
-            className={`sim-pill-btn ${isFullscreen ? 'active' : ''}`}
-            title="Toggle Fullscreen vs iPhone Frame"
-          >
-            {isFullscreen ? <Smartphone style={{ width: 14, height: 14 }} /> : <Maximize2 style={{ width: 14, height: 14 }} />}
-            <span>{isFullscreen ? 'iPhone View' : 'Full Screen'}</span>
-          </button>
+    <div className={`device-stage ${shellMode.isEdgeToEdge ? 'fullscreen-mode' : ''}`}>
+      <div className={`iphone-frame ${shellMode.isEdgeToEdge ? 'fullscreen-mode' : ''}`}>
 
-          <div style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.15)' }} />
-
-          <button
-            onClick={toggleTheme}
-            className="sim-pill-btn"
-            title="Cycle Theme (Light / Dark / System)"
-          >
-            {settings?.theme === 'system' ? (
-              <Smartphone style={{ width: 14, height: 14, color: '#30B0C7' }} />
-            ) : settings?.theme === 'dark' ? (
-              <Moon style={{ width: 14, height: 14, color: '#0A84FF' }} />
-            ) : (
-              <Sun style={{ width: 14, height: 14, color: '#FFD60A' }} />
-            )}
-            <span>
-              {settings?.theme === 'system'
-                ? 'System'
-                : settings?.theme === 'dark'
-                  ? 'Dark'
-                  : 'Light'}
-            </span>
-          </button>
-
-          <div style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.15)' }} />
-
-          {/* Quick Accent Selector */}
-          <button
-            onClick={cycleAccent}
-            className="sim-pill-btn"
-            title="Cycle Accent Palette"
-          >
-            <Palette style={{ width: 14, height: 14, color: ACCENT_PRESETS.find(p => p.id === activeAccent)?.color }} />
-            <span>{ACCENT_PRESETS.find(p => p.id === activeAccent)?.label}</span>
-          </button>
-
-          <div style={{ width: 1, height: 16, background: 'rgba(255,255,255,0.15)' }} />
-
-          {/* Audio Chimes Toggle */}
-          <button
-            onClick={toggleSound}
-            className="sim-pill-btn"
-            title="Toggle Sound FX"
-          >
-            {soundEnabled ? (
-              <Volume2 style={{ width: 14, height: 14, color: 'var(--ios-green)' }} />
-            ) : (
-              <VolumeX style={{ width: 14, height: 14, color: 'var(--label-tertiary)' }} />
-            )}
-            <span>{soundEnabled ? 'Sound On' : 'Muted'}</span>
-          </button>
-        </aside>
-      )}
-
-      {/* ── iPhone 16 Pro Frame Shell ── */}
-      <div className={`iphone-frame ${isFullscreen || isNative ? 'fullscreen-mode' : ''}`}>
-
-        {/* Dynamic Island */}
-        {!isNative && (
-          <div className="dynamic-island">
-            <div className="dynamic-island-sensor" />
-            <div style={{ fontSize: 10, color: '#fff', opacity: 0.6, fontWeight: 600 }}>FACTORY LEDGER</div>
-            <div className="dynamic-island-cam" />
-          </div>
-        )}
-
-        {/* ── Apple iOS Status Bar ── */}
-        {!isNative && (
-          <div className="ios-status-bar">
-            <div className="status-time">{currentTime || '9:41'}</div>
-            <div className="status-icons">
-              {/* Cellular 4-bars */}
-              <svg width="17" height="11" viewBox="0 0 17 11" fill="currentColor">
-                <rect x="0" y="8" width="3" height="3" rx="0.8" />
-                <rect x="4.5" y="5.5" width="3" height="5.5" rx="0.8" />
-                <rect x="9" y="3" width="3" height="8" rx="0.8" />
-                <rect x="13.5" y="0" width="3" height="11" rx="0.8" />
-              </svg>
-              <Wifi style={{ width: 15, height: 15 }} strokeWidth={2.4} />
-              {/* Apple Battery Indicator */}
-              <div style={{
-                width: 24,
-                height: 12,
-                borderRadius: 3.5,
-                border: '1px solid currentColor',
-                padding: 1.5,
-                display: 'flex',
-                alignItems: 'center',
-                position: 'relative'
-              }}>
-                <div style={{
-                  height: '100%',
-                  width: '85%',
-                  background: 'var(--ios-green)',
-                  borderRadius: 1.5
-                }} />
-                <div style={{
-                  position: 'absolute',
-                  right: -3.5,
-                  top: 3,
-                  width: 2,
-                  height: 4,
-                  borderRadius: '0 1px 1px 0',
-                  background: 'currentColor'
-                }} />
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* ── Toast Notification (Issue 28f: Full screen mobile width + centered) ── */}
         {toastNotice && (
@@ -723,11 +550,11 @@ export default function Layout() {
           </NavLink>
         </nav>
 
-        {/* iOS Bottom Home Indicator (Desktop Simulator Frame) */}
-        {!isNative && <div className="home-indicator" />}
-
         {/* Global Security Passcode & Biometric Lock Screen */}
         <IOSAppLockScreen />
+
+        {/* Web-only installation guidance; hidden in Capacitor and standalone mode. */}
+        <PWAInstallPrompt />
       </div>
     </div>
   );

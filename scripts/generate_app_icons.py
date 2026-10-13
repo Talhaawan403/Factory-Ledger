@@ -14,6 +14,8 @@ def generate_icons(source_image_path='public/app-icon.png'):
     os.makedirs(public_dir, exist_ok=True)
 
     im.resize((512, 512), Image.Resampling.LANCZOS).save(os.path.join(public_dir, 'app-icon.png'))
+    im.resize((192, 192), Image.Resampling.LANCZOS).save(os.path.join(public_dir, 'pwa-icon-192.png'))
+    im.resize((512, 512), Image.Resampling.LANCZOS).save(os.path.join(public_dir, 'pwa-icon-512.png'))
     im.resize((180, 180), Image.Resampling.LANCZOS).save(os.path.join(public_dir, 'apple-touch-icon.png'))
     im.resize((180, 180), Image.Resampling.LANCZOS).save(os.path.join(public_dir, 'app-touch-icon.png'))
     im.resize((64, 64), Image.Resampling.LANCZOS).save(os.path.join(public_dir, 'favicon.png'))

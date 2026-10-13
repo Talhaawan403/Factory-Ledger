@@ -1,0 +1,44 @@
+{
+  "name": "Factory Ledger",
+  "short_name": "Ledger",
+  "description": "Factory dispatch, inventory, settlement and party ledger management.",
+  "lang": "en",
+  "dir": "ltr",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F2F2F7",
+  "theme_color": "#007AFF",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "/pwa-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/pwa-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Summary",
+      "short_name": "Summary",
+      "url": "/"
+    },
+    {
+      "name": "Parties",
+      "short_name": "Parties",
+      "url": "/parties"
+    },
+    {
+      "name": "Inventory",
+      "short_name": "Inventory",
+      "url": "/inventory"
+    }
+  ]
+}

@@ -5,7 +5,11 @@ import App from './App.tsx'
 import ErrorBoundary from './components/ErrorBoundary.tsx'
 import { syncManager } from './lib/syncManager'
 
+import { registerSW } from 'virtual:pwa-register'
+
 syncManager.init();
+registerSW({ immediate: true });
+
 
 if (import.meta.env.DEV) {
   import('./lib/devSeed').then(({ seedTestData, clearAllData }) => {
@@ -22,5 +26,4 @@ createRoot(document.getElementById('root')!).render(
     </ErrorBoundary>
   </StrictMode>,
 )
-
 

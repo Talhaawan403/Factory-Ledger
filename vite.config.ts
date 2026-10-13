@@ -1,9 +1,27 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
+import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    VitePWA({
+      registerType: 'autoUpdate',
+      includeAssets: ['favicon.png', 'apple-touch-icon.png', 'pwa-icon-192.png', 'pwa-icon-512.png'],
+      manifest: false, // We already have a manifest.webmanifest in public folder
+      workbox: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}']
+      },
+      devOptions: {
+        enabled: true
+      }
+    }),
+  ],
+  server: {
+    port: 5173,
+    host: true,
+  },
   build: {
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
