@@ -422,6 +422,13 @@ export function sanitizeForFirestore(obj: any): any {
   if (typeof obj === 'number') {
     return isNaN(obj) || !isFinite(obj) ? 0 : obj;
   }
+  if (typeof obj === 'string') {
+    const lower = obj.trim().toLowerCase();
+    if (lower === 'nan' || lower === 'infinity' || lower === '-infinity') {
+      return 0;
+    }
+    return obj;
+  }
   if (obj === null || typeof obj !== 'object') return obj;
   if (Array.isArray(obj)) {
     return obj.map(sanitizeForFirestore);

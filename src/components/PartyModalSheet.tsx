@@ -1,5 +1,19 @@
-import React, { useState } from 'react';
-import { Building2, Phone, MapPin, User, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import {
+  Building2,
+  X,
+  Store,
+  Layers,
+  Check,
+  Pickaxe,
+  UserPlus,
+  ShieldCheck,
+} from 'lucide-react';
+import { playPopSound } from '../utils/delight';
+import { getSettings } from '../lib/db';
+import { getMaterialItems, getMaterialBadgeTheme, COAL_ITEM_ID } from '../utils/materials';
+import type { AppSettings, MaterialDefinition } from '../types';
+import FloatingField from './FloatingField';
 
 interface PartyModalSheetProps {
   isOpen: boolean;
@@ -9,13 +23,20 @@ interface PartyModalSheetProps {
     contactPerson?: string;
     phone?: string;
     address?: string;
+    type?: 'buyer' | 'supplier';
+    materialIds?: string[];
+    isDirectMine?: boolean;
+    linkedMineId?: string;
   };
+  settings?: AppSettings;
   onClose: () => void;
   onSave: (data: {
     name: string;
     contactPerson: string;
     phone: string;
     address: string;
+    type: 'buyer' | 'supplier';
+    materialIds?: string[];
   }) => void;
 }
 
@@ -23,16 +44,18 @@ export default function PartyModalSheet({
   isOpen,
   mode,
   initialData,
+  settings,
   onClose,
-  onSave
+  onSave,
 }: PartyModalSheetProps) {
   if (!isOpen) return null;
 
   return (
     <PartyModalContent
-      key={mode === 'edit' ? (initialData?.name || 'edit') : 'add'}
+      key={mode === 'edit' ? `${initialData?.name || 'edit'}_${initialData?.type || 'buyer'}` : 'add'}
       mode={mode}
       initialData={initialData}
+      settings={settings}
       onClose={onClose}
       onSave={onSave}
     />
@@ -42,15 +65,44 @@ export default function PartyModalSheet({
 function PartyModalContent({
   mode,
   initialData,
+  settings: propSettings,
   onClose,
-  onSave
+  onSave,
 }: Omit<PartyModalSheetProps, 'isOpen'>) {
   const [name, setName] = useState(initialData?.name || '');
   const [contactPerson, setContactPerson] = useState(initialData?.contactPerson || '');
   const [phone, setPhone] = useState(initialData?.phone || '');
   const [address, setAddress] = useState(initialData?.address || '');
+  const [partyType, setPartyType] = useState<'buyer' | 'supplier'>(initialData?.type || 'buyer');
+  const [selectedMaterialIds, setSelectedMaterialIds] = useState<string[]>(
+    initialData?.materialIds && initialData.materialIds.length > 0
+      ? initialData.materialIds
+      : [COAL_ITEM_ID]
+  );
+  const [availableMaterials, setAvailableMaterials] = useState<MaterialDefinition[]>([]);
+
+  useEffect(() => {
+    if (propSettings) {
+      setAvailableMaterials(getMaterialItems(propSettings, true));
+    } else {
+      getSettings().then((s) => {
+        setAvailableMaterials(getMaterialItems(s, true));
+      });
+    }
+  }, [propSettings]);
 
   const isValid = name.trim().length > 0;
+
+  const toggleMaterial = (matId: string) => {
+    setSelectedMaterialIds((prev) => {
+      if (prev.includes(matId)) {
+        if (prev.length === 1) return prev;
+        return prev.filter((id) => id !== matId);
+      } else {
+        return [...prev, matId];
+      }
+    });
+  };
 
   const handleSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -59,457 +111,281 @@ function PartyModalContent({
       name: name.trim(),
       contactPerson: contactPerson.trim() || name.trim(),
       phone: phone.trim(),
-      address: address.trim()
+      address: address.trim(),
+      type: partyType,
+      materialIds:
+        partyType === 'supplier'
+          ? selectedMaterialIds.length > 0
+            ? selectedMaterialIds
+            : [COAL_ITEM_ID]
+          : undefined,
     });
   };
 
-  // Get 1-2 initials for Apple Contacts style monogram
+  // Monogram initials
   const initials = name
     .trim()
     .split(/\s+/)
     .slice(0, 2)
-    .map(w => w[0]?.toUpperCase() || '')
+    .map((w) => w[0]?.toUpperCase() || '')
     .join('');
+
+  const isBuyer = partyType === 'buyer';
 
   return (
     <>
       {/* ── Apple Dimmed Blur Backdrop ── */}
-      <div
-        className="ios-modal-backdrop"
-        onClick={onClose}
-        style={{ zIndex: 99998 }}
-      />
+      <div className="ios-modal-backdrop" onClick={onClose} />
 
-      {/* ── Apple iOS Modal Sheet ── */}
-      <div
-        className="ios-bottom-sheet"
-        style={{
-          zIndex: 99999,
-          maxHeight: '88vh',
-          height: 'auto',
-          background: 'var(--bg-grouped)',
-          borderTopLeftRadius: 24,
-          borderTopRightRadius: 24,
-          borderTop: '0.5px solid rgba(255, 255, 255, 0.12)',
-          boxShadow: '0 -10px 40px rgba(0, 0, 0, 0.5)'
-        }}
-      >
-        {/* Grabber Handle */}
-        <div
-          className="ios-sheet-handle"
-          style={{
-            width: 36,
-            height: 5,
-            borderRadius: 3,
-            backgroundColor: 'rgba(255, 255, 255, 0.25)',
-            margin: '8px auto 4px'
-          }}
-        />
+      {/* ── Modal Dialog / Bottom Sheet ── */}
+      <div className="ios-bottom-sheet party-modal-container" role="dialog" aria-modal="true">
+        {/* Grabber Handle for mobile swipe hint */}
+        <div className="ios-sheet-handle sm:hidden" />
 
-        {/* Navigation Bar */}
-        <div
-          className="ios-sheet-header"
-          style={{
-            padding: '10px 16px 12px',
-            borderBottom: '0.5px solid var(--separator)',
-            background: 'var(--bg-grouped)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between'
-          }}
-        >
+        {/* ── Modal Header ── */}
+        <div className="party-modal-header">
+          <div className="party-modal-header-left">
+            <div className={`party-modal-badge ${isBuyer ? 'is-buyer' : 'is-supplier'}`}>
+              {initials ? initials : isBuyer ? <Building2 size={20} /> : <Store size={20} />}
+            </div>
+            <div>
+              <div className="party-modal-title">
+                {mode === 'add' ? 'New Party Profile' : 'Edit Party Profile'}
+              </div>
+              <div className="party-modal-subtitle">
+                {isBuyer
+                  ? 'Customer Account · Sales & Invoices'
+                  : 'Vendor Profile · Purchases & Inward Stock'}
+              </div>
+            </div>
+          </div>
+
           <button
             type="button"
             onClick={onClose}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--ios-blue)',
-              fontSize: 17,
-              fontWeight: 400,
-              cursor: 'pointer',
-              padding: '4px 6px'
-            }}
+            aria-label="Close dialog"
+            className="party-modal-close-btn"
           >
-            Cancel
-          </button>
-
-          <span
-            style={{
-              fontSize: 17,
-              fontWeight: 600,
-              color: 'var(--label-primary)'
-            }}
-          >
-            {mode === 'add' ? 'New Party' : 'Edit Party'}
-          </span>
-
-          <button
-            type="button"
-            onClick={() => handleSubmit()}
-            disabled={!isValid}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: isValid ? 'var(--ios-blue)' : 'var(--label-quaternary)',
-              fontSize: 17,
-              fontWeight: 600,
-              cursor: isValid ? 'pointer' : 'default',
-              padding: '4px 6px',
-              transition: 'color 0.15s ease'
-            }}
-          >
-            {mode === 'add' ? 'Add' : 'Save'}
+            <X size={16} strokeWidth={2.4} />
           </button>
         </div>
 
-        {/* Sheet Content Body */}
-        <form
-          onSubmit={handleSubmit}
-          className="ios-sheet-body"
-          style={{
-            padding: '0 0 max(32px, env(safe-area-inset-bottom))',
-            background: 'var(--bg-grouped)',
-            overflowY: 'auto'
-          }}
-        >
-          {/* Apple Contacts Style Profile Monogram */}
-          <div
-            style={{
-              display: 'flex',
-              color: 'black',
-              flexDirection: 'column',
-              alignItems: 'center',
-              padding: '20px 16px 12px'
-            }}
-          >
-            <div
-              style={{
-                width: 76,
-                height: 76,
-                borderRadius: '50%',
-                background: 'white',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: 'none',
-                marginBottom: 8
-              }}
-            >
-              {initials ? (
-                <span
-                  style={{
-                    fontSize: 26,
-                    fontWeight: 700,
-                    color: 'var(--ios-blue)',
-                    letterSpacing: 0.5
-                  }}
-                >
-                  {initials}
-                </span>
-              ) : (
-                <Building2 size={34} color="var(--ios-blue)" strokeWidth={1.8} />
-              )}
-            </div>
-            <span
-              style={{
-                fontSize: 13,
-                fontWeight: 500,
-                color: 'var(--label-secondary)',
-                letterSpacing: -0.1
-              }}
-            >
-              {name.trim() || (mode === 'add' ? 'Add Party Profile' : 'Party Details')}
-            </span>
-          </div>
-
-          {/* Inset Grouped Table Section */}
-          <div className="ios-group" style={{ margin: '8px 16px 20px' }}>
-            <div className="ios-group-title" style={{ paddingLeft: 4 }}>
-              PARTY DETAILS
-            </div>
-
-            <div className="ios-card-grouped">
-              {/* Row 1: Party / Company Name */}
-              <div
-                style={{
-                  position: 'relative',
-                  display: 'flex',
-                  alignItems: 'center',
-                  minHeight: 52,
-                  padding: '8px 16px',
-                  background: 'var(--bg-card)'
+        {/* ── Modal Form Body ── */}
+        <form onSubmit={handleSubmit} className="party-modal-body">
+          {/* ── Party Role / Type Selector ── */}
+          <div className="party-form-field">
+            <div className="party-field-label">ACCOUNT TYPE / ROLE</div>
+            <div className="party-type-grid">
+              <button
+                type="button"
+                onClick={() => {
+                  playPopSound();
+                  setPartyType('buyer');
                 }}
+                className={`party-type-card ${isBuyer ? 'active-buyer' : ''}`}
               >
-                <div
-                  className="ios-glyph-badge"
-                  style={{ background: '#0A84FF', marginRight: 12 }}
-                >
+                <div className="party-type-icon buyer-icon">
                   <Building2 size={18} strokeWidth={2.2} />
                 </div>
-                <span
-                  style={{
-                    width: 72,
-                    fontSize: 16,
-                    color: 'var(--label-secondary)',
-                    fontWeight: 400,
-                    flexShrink: 0
-                  }}
-                >
-                  Name
-                </span>
-                <input
-                  type="text"
-                  required
-                  autoFocus={mode === 'add'}
-                  placeholder="Required"
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  style={{
-                    flex: 1,
-                    border: 'none',
-                    background: 'transparent',
-                    outline: 'none',
-                    fontSize: 17,
-                    color: 'var(--label-primary)',
-                    fontFamily: 'var(--font-system)'
-                  }}
-                />
-                {name.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setName('')}
-                    style={{
-                      background: 'var(--fill-tertiary)',
-                      border: 'none',
-                      borderRadius: '50%',
-                      width: 20,
-                      height: 20,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: 'var(--label-secondary)',
-                      cursor: 'pointer',
-                      padding: 0,
-                      marginLeft: 8
-                    }}
-                  >
-                    <X size={12} strokeWidth={2.5} />
-                  </button>
-                )}
-                <div className="ios-separator with-glyph" style={{ left: 56 }} />
-              </div>
-
-              {/* Row 2: Contact Person */}
-              <div
-                style={{
-                  position: 'relative',
-                  display: 'flex',
-                  alignItems: 'center',
-                  minHeight: 52,
-                  padding: '8px 16px',
-                  background: 'var(--bg-card)'
-                }}
-              >
-                <div
-                  className="ios-glyph-badge"
-                  style={{ background: '#5E5CE6', marginRight: 12 }}
-                >
-                  <User size={18} strokeWidth={2.2} />
+                <div className="party-type-text">
+                  <div className="party-type-name">Buyer</div>
+                  <div className="party-type-desc">Purchases Material / owes payment</div>
                 </div>
-                <span
-                  style={{
-                    width: 72,
-                    fontSize: 16,
-                    color: 'var(--label-secondary)',
-                    fontWeight: 400,
-                    flexShrink: 0
-                  }}
-                >
-                  Contact
-                </span>
-                <input
-                  type="text"
-                  placeholder="Optional"
-                  value={contactPerson}
-                  onChange={e => setContactPerson(e.target.value)}
-                  style={{
-                    flex: 1,
-                    border: 'none',
-                    background: 'transparent',
-                    outline: 'none',
-                    fontSize: 17,
-                    color: 'var(--label-primary)',
-                    fontFamily: 'var(--font-system)'
-                  }}
-                />
-                {contactPerson.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setContactPerson('')}
-                    style={{
-                      background: 'var(--fill-tertiary)',
-                      border: 'none',
-                      borderRadius: '50%',
-                      width: 20,
-                      height: 20,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: 'var(--label-secondary)',
-                      cursor: 'pointer',
-                      padding: 0,
-                      marginLeft: 8
-                    }}
-                  >
-                    <X size={12} strokeWidth={2.5} />
-                  </button>
-                )}
-                <div className="ios-separator with-glyph" style={{ left: 56 }} />
-              </div>
+                {isBuyer && <Check size={16} strokeWidth={2.6} className="party-type-check" />}
+              </button>
 
-              {/* Row 3: Phone */}
-              <div
-                style={{
-                  position: 'relative',
-                  display: 'flex',
-                  alignItems: 'center',
-                  minHeight: 52,
-                  padding: '8px 16px',
-                  background: 'var(--bg-card)'
+              <button
+                type="button"
+                onClick={() => {
+                  playPopSound();
+                  setPartyType('supplier');
                 }}
+                className={`party-type-card ${!isBuyer ? 'active-supplier' : ''}`}
               >
-                <div
-                  className="ios-glyph-badge"
-                  style={{ background: '#34C759', marginRight: 12 }}
-                >
-                  <Phone size={18} strokeWidth={2.2} />
+                <div className="party-type-icon supplier-icon">
+                  <Store size={18} strokeWidth={2.2} />
                 </div>
-                <span
-                  style={{
-                    width: 72,
-                    fontSize: 16,
-                    color: 'var(--label-secondary)',
-                    fontWeight: 400,
-                    flexShrink: 0
-                  }}
-                >
-                  Phone
-                </span>
-                <input
-                  type="tel"
-                  placeholder="Optional"
-                  value={phone}
-                  onChange={e => setPhone(e.target.value)}
-                  style={{
-                    flex: 1,
-                    border: 'none',
-                    background: 'transparent',
-                    outline: 'none',
-                    fontSize: 17,
-                    color: 'var(--label-primary)',
-                    fontFamily: 'var(--font-system)'
-                  }}
-                />
-                {phone.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setPhone('')}
-                    style={{
-                      background: 'var(--fill-tertiary)',
-                      border: 'none',
-                      borderRadius: '50%',
-                      width: 20,
-                      height: 20,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: 'var(--label-secondary)',
-                      cursor: 'pointer',
-                      padding: 0,
-                      marginLeft: 8
-                    }}
-                  >
-                    <X size={12} strokeWidth={2.5} />
-                  </button>
-                )}
-                <div className="ios-separator with-glyph" style={{ left: 56 }} />
-              </div>
-
-              {/* Row 4: Address */}
-              <div
-                style={{
-                  position: 'relative',
-                  display: 'flex',
-                  alignItems: 'center',
-                  minHeight: 52,
-                  padding: '8px 16px',
-                  background: 'var(--bg-card)'
-                }}
-              >
-                <div
-                  className="ios-glyph-badge"
-                  style={{ background: '#FF9500', marginRight: 12 }}
-                >
-                  <MapPin size={18} strokeWidth={2.2} />
+                <div className="party-type-text">
+                  <div className="party-type-name">Supplier</div>
+                  <div className="party-type-desc">Supplies material / vendor</div>
                 </div>
-                <span
-                  style={{
-                    width: 72,
-                    fontSize: 16,
-                    color: 'var(--label-secondary)',
-                    fontWeight: 400,
-                    flexShrink: 0
-                  }}
-                >
-                  Address
-                </span>
-                <input
-                  type="text"
-                  placeholder="Optional"
-                  value={address}
-                  onChange={e => setAddress(e.target.value)}
-                  style={{
-                    flex: 1,
-                    border: 'none',
-                    background: 'transparent',
-                    outline: 'none',
-                    fontSize: 17,
-                    color: 'var(--label-primary)',
-                    fontFamily: 'var(--font-system)'
-                  }}
-                />
-                {address.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setAddress('')}
-                    style={{
-                      background: 'var(--fill-tertiary)',
-                      border: 'none',
-                      borderRadius: '50%',
-                      width: 20,
-                      height: 20,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      color: 'var(--label-secondary)',
-                      cursor: 'pointer',
-                      padding: 0,
-                      marginLeft: 8
-                    }}
-                  >
-                    <X size={12} strokeWidth={2.5} />
-                  </button>
-                )}
-                {/* No separator below the last item */}
-              </div>
-            </div>
-
-            <div className="ios-group-footnote" style={{ paddingLeft: 4, marginTop: 8 }}>
-              Parties are saved to your ledger and can be referenced in dispatches, invoices, and payments.
+                {!isBuyer && <Check size={16} strokeWidth={2.6} className="party-type-check" />}
+              </button>
             </div>
           </div>
+
+          {/* ── Company / Party Name ── */}
+          <FloatingField
+            label="Company / Party Name *"
+            value={name}
+            onChange={setName}
+            required
+            autoFocus={mode === 'add'}
+            placeholder="e.g. Lucky Cement Ltd, Star Coal Traders"
+          />
+
+          {Boolean(initialData?.isDirectMine || initialData?.linkedMineId) && (
+            <div
+              style={{
+                fontSize: 12,
+                color: 'var(--label-secondary)',
+                marginTop: -8,
+                marginBottom: 14,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '6px 10px',
+                borderRadius: 8,
+                background: 'rgba(0, 122, 255, 0.08)',
+                border: '1px solid rgba(0, 122, 255, 0.18)',
+              }}
+            >
+              <ShieldCheck size={14} color="var(--ios-blue)" style={{ flexShrink: 0 }} />
+              <span>Direct Mine Supplier: Linked to mine origin. Managed via Mine Ledger.</span>
+            </div>
+          )}
+
+          {/* ── Contact Person & Phone (2 Columns on Desktop) ── */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3">
+            <FloatingField
+              label="Contact Person"
+              value={contactPerson}
+              onChange={setContactPerson}
+              placeholder="e.g. Tariq Mehmood (Manager)"
+            />
+            <FloatingField
+              label="Phone / WhatsApp"
+              type="tel"
+              value={phone}
+              onChange={setPhone}
+              placeholder="e.g. 0300-1234567"
+            />
+          </div>
+
+          {/* ── Address ── */}
+          <FloatingField
+            label="Office or Delivery Address"
+            value={address}
+            onChange={setAddress}
+            placeholder="e.g. Plot 42, Industrial Zone, Quetta"
+          />
+
+          {/* ── Supplied Commodities (Suppliers only) ── */}
+          {!isBuyer && (
+            <div className="party-form-field">
+              <div className="party-field-label">
+                <span>SUPPLIED COMMODITIES & MATERIALS</span>
+              </div>
+
+              {Boolean(initialData?.isDirectMine || initialData?.linkedMineId) ? (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: '12px 14px',
+                    borderRadius: 12,
+                    background: 'rgba(0, 122, 255, 0.08)',
+                    border: '1px solid rgba(0, 122, 255, 0.22)',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: 8,
+                      background: 'rgba(0, 122, 255, 0.16)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: 'var(--ios-blue)',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Pickaxe size={16} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 650, color: 'var(--label-primary)' }}>
+                      Direct Mine Commodity (Bound)
+                    </div>
+                    <div style={{ fontSize: 11.5, color: 'var(--label-secondary)', marginTop: 2 }}>
+                      This profile is linked to {initialData?.name || 'the mine'} directly. Material commodity is managed by the mine.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                  {availableMaterials.map((mat) => {
+                    const isSelected = selectedMaterialIds.includes(mat.id);
+                    const theme = getMaterialBadgeTheme(mat.id);
+                    return (
+                      <button
+                        key={mat.id}
+                        type="button"
+                        onClick={() => {
+                          playPopSound();
+                          toggleMaterial(mat.id);
+                        }}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          padding: '7px 12px',
+                          borderRadius: 20,
+                          fontSize: 12.5,
+                          fontWeight: isSelected ? 650 : 500,
+                          border: isSelected
+                            ? `1.5px solid ${theme.dot || '#007AFF'}`
+                            : '1px solid var(--separator)',
+                          background: isSelected
+                            ? theme.bg || 'rgba(0,122,255,0.12)'
+                            : 'var(--fill-quaternary)',
+                          color: isSelected
+                            ? theme.color || 'var(--ios-blue)'
+                            : 'var(--label-primary)',
+                          cursor: 'pointer',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        {isSelected ? (
+                          <Check size={13} strokeWidth={2.8} />
+                        ) : (
+                          <Layers size={13} strokeWidth={1.8} style={{ opacity: 0.6 }} />
+                        )}
+                        <span>{mat.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </form>
+
+        {/* ── Modal Sticky Action Footer ── */}
+        <div className="party-modal-footer">
+          <button type="button" onClick={onClose} className="party-btn-secondary">
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!isValid}
+            onClick={() => handleSubmit()}
+            className={`party-btn-primary ${isBuyer ? 'is-buyer' : 'is-supplier'}`}
+          >
+            {mode === 'add' ? (
+              <>
+                <UserPlus size={16} strokeWidth={2.4} />
+                <span>Add Party Profile</span>
+              </>
+            ) : (
+              <>
+                <Check size={16} strokeWidth={2.8} />
+                <span>Save Changes</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
     </>
   );

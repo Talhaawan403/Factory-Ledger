@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo } from 'react';
-import { getParties, saveParty, archiveParty, getDispatches, getPayments, getSettings } from '../lib/db';
-import type { Party, Dispatch, Payment, AppSettings } from '../types';
+import { getParties, saveParty, archiveParty, getDispatches, getPayments, getLots, getSettings } from '../lib/db';
+import type { Party, Dispatch, Payment, AppSettings, InventoryLot } from '../types';
 import { calculatePartyBalance } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { playPopSound, triggerConfetti } from '../utils/delight';
@@ -10,6 +10,7 @@ import {
   UserPlus,
   ChevronRight,
   Building2,
+  Store,
   Search,
   X,
   List,
@@ -20,7 +21,8 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
-  ChevronDown
+  ChevronDown,
+  Pickaxe
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import PartyModalSheet from '../components/PartyModalSheet';
@@ -32,6 +34,7 @@ export default function PartiesList() {
   const [parties, setParties] = useState<Party[]>([]);
   const [dispatches, setDispatches] = useState<Dispatch[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [lots, setLots] = useState<InventoryLot[]>([]);
   const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [isAdding, setIsAdding] = useState(false);
@@ -60,20 +63,22 @@ export default function PartiesList() {
   const navigate = useNavigate();
 
   const refreshData = async () => {
-    const [p, d, pay, s] = await Promise.all([getParties(), getDispatches(), getPayments(), getSettings()]);
+    const [p, d, pay, l, s] = await Promise.all([getParties(), getDispatches(), getPayments(), getLots(), getSettings()]);
     setParties(p);
     setDispatches(d);
     setPayments(pay);
+    setLots(l);
     setSettings(s);
   };
 
   useEffect(() => {
     let current = true;
-    Promise.all([getParties(), getDispatches(), getPayments(), getSettings()]).then(([p, d, pay, s]) => {
+    Promise.all([getParties(), getDispatches(), getPayments(), getLots(), getSettings()]).then(([p, d, pay, l, s]) => {
       if (current) {
         setParties(p);
         setDispatches(d);
         setPayments(pay);
+        setLots(l);
         setSettings(s);
         setLoading(false);
       }
@@ -88,6 +93,7 @@ export default function PartiesList() {
   });
 
   const [tabFilter, setTabFilter] = useState<'active' | 'archived'>('active');
+  const [roleFilter, setRoleFilter] = useState<'all' | 'buyer' | 'supplier'>('all');
   const [sortBy, setSortBy] = useState<'latest_entry' | 'name' | 'highest_due' | 'highest_adv'>('latest_entry');
   const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
   const [toastMsg, setToastMsg] = useState<string | null>(null);
@@ -119,12 +125,17 @@ export default function PartiesList() {
     }>();
 
     parties.forEach((party) => {
+      const isSupplier = party.type === 'supplier';
+      const cleanName = party.name.trim().toLowerCase();
       const pDispatches = dispatches.filter((d) =>
-        d.partyId === party.id || (!d.partyId && d.factoryName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+        d.partyId === party.id || (!d.partyId && d.factoryName?.trim().toLowerCase() === cleanName)
       );
       const pPayments = payments.filter((p) =>
-        p.partyId === party.id || (!p.partyId && (p as any).partyName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+        p.partyId === party.id || (!p.partyId && (p as any).partyName?.trim().toLowerCase() === cleanName)
       );
+      const pLots = isSupplier ? lots.filter((l) =>
+        !l.deleted && (l.supplierId === party.id || (!l.supplierId && (l.supplier || l.boughtFrom || '').trim().toLowerCase() === cleanName))
+      ) : [];
 
       let latestTime = party.createdAt || 0;
       pDispatches.forEach((d) => {
@@ -139,25 +150,35 @@ export default function PartiesList() {
         const best = Math.max(t, ct);
         if (best > latestTime) latestTime = best;
       });
+      pLots.forEach((l) => {
+        const t = l.date ? new Date(l.date).getTime() : 0;
+        const ct = l.createdAt || 0;
+        const best = Math.max(t, ct);
+        if (best > latestTime) latestTime = best;
+      });
 
-      const balanceResult = calculatePartyBalance(pDispatches, pPayments);
+      const balanceResult = calculatePartyBalance(pDispatches, pPayments, party, lots);
 
       map.set(party.id, {
         latestEntryTime: latestTime,
         outstandingBalance: balanceResult.outstandingBalance,
         totalProfit: balanceResult.totalProfit,
-        dispatchCount: pDispatches.length
+        dispatchCount: isSupplier ? pLots.length : pDispatches.length
       });
     });
 
     return map;
-  }, [parties, dispatches, payments]);
+  }, [parties, dispatches, payments, lots]);
 
   // Filter and sort parties
   const filteredParties = useMemo(() => {
     const result = parties.filter((p) => {
       const isArchived = Boolean(p.isArchived);
       if (tabFilter === 'archived' ? !isArchived : isArchived) return false;
+
+      // Role filter
+      if (roleFilter === 'buyer' && p.type === 'supplier') return false;
+      if (roleFilter === 'supplier' && p.type !== 'supplier') return false;
 
       const q = searchQuery.toLowerCase();
       const matchesSearch =
@@ -196,7 +217,7 @@ export default function PartiesList() {
 
       return sortOrder === 'desc' ? diff : -diff;
     });
-  }, [parties, searchQuery, tabFilter, sortBy, sortOrder, partyMetadataMap]);
+  }, [parties, searchQuery, tabFilter, roleFilter, sortBy, sortOrder, partyMetadataMap]);
 
   if (loading) {
     return (
@@ -294,6 +315,86 @@ export default function PartiesList() {
             </button>
           )}
         </div>
+      </div>
+
+      {/* ── Segmented Role Pills (All, Buyers, Suppliers) ── */}
+      <div style={{ padding: '0 16px 12px', display: 'flex', alignItems: 'center', gap: 6, overflowX: 'auto' }}>
+        <button
+          type="button"
+          onClick={() => {
+            playPopSound();
+            setRoleFilter('all');
+          }}
+          style={{
+            padding: '6px 12px',
+            borderRadius: 14,
+            border: 'none',
+            fontSize: 12.5,
+            fontWeight: 700,
+            backgroundColor: roleFilter === 'all' ? 'var(--label-primary)' : 'var(--fill-primary)',
+            color: roleFilter === 'all' ? 'var(--bg-card)' : 'var(--label-secondary)',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            whiteSpace: 'nowrap',
+            transition: 'all 0.15s ease'
+          }}
+        >
+          All ({parties.filter((p) => (tabFilter === 'archived' ? p.isArchived : !p.isArchived)).length})
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            playPopSound();
+            setRoleFilter('buyer');
+          }}
+          style={{
+            padding: '6px 12px',
+            borderRadius: 14,
+            border: 'none',
+            fontSize: 12.5,
+            fontWeight: 700,
+            backgroundColor: roleFilter === 'buyer' ? 'var(--ios-blue)' : 'var(--fill-primary)',
+            color: roleFilter === 'buyer' ? '#FFFFFF' : 'var(--label-secondary)',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            whiteSpace: 'nowrap',
+            transition: 'all 0.15s ease'
+          }}
+        >
+          <Building2 size={13} strokeWidth={2.4} />
+          <span>Buyers ({parties.filter((p) => (tabFilter === 'archived' ? p.isArchived : !p.isArchived) && p.type !== 'supplier').length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            playPopSound();
+            setRoleFilter('supplier');
+          }}
+          style={{
+            padding: '6px 12px',
+            borderRadius: 14,
+            border: 'none',
+            fontSize: 12.5,
+            fontWeight: 700,
+            backgroundColor: roleFilter === 'supplier' ? '#FF9500' : 'var(--fill-primary)',
+            color: roleFilter === 'supplier' ? '#FFFFFF' : 'var(--label-secondary)',
+            cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            whiteSpace: 'nowrap',
+            transition: 'all 0.15s ease'
+          }}
+        >
+          <Store size={13} strokeWidth={2.4} />
+          <span>Suppliers ({parties.filter((p) => (tabFilter === 'archived' ? p.isArchived : !p.isArchived) && p.type === 'supplier').length})</span>
+        </button>
       </div>
 
       {/* ── Categories, Sorting & Persistent View Switcher Bar ── */}
@@ -498,13 +599,20 @@ export default function PartiesList() {
               </div>
             ) : (
               filteredParties.map((party, i) => {
+                const isSupplier = party.type === 'supplier';
+                const isDirectMine = Boolean(party.isDirectMine || party.linkedMineId || party.name.toLowerCase().includes('direct ledger'));
+                const cleanName = party.name.trim().toLowerCase();
                 const partyDispatches = dispatches.filter((d) =>
-                  d.partyId === party.id || (!d.partyId && d.factoryName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+                  d.partyId === party.id || (!d.partyId && d.factoryName?.trim().toLowerCase() === cleanName)
                 );
                 const partyPayments = payments.filter((p) =>
-                  p.partyId === party.id || (!p.partyId && (p as any).partyName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+                  p.partyId === party.id || (!p.partyId && (p as any).partyName?.trim().toLowerCase() === cleanName)
                 );
-                const balanceResult = calculatePartyBalance(partyDispatches, partyPayments);
+                const partyLots = isSupplier ? lots.filter((l) =>
+                  !l.deleted && (l.supplierId === party.id || (!l.supplierId && (l.supplier || l.boughtFrom || '').trim().toLowerCase() === cleanName))
+                ) : [];
+
+                const balanceResult = calculatePartyBalance(partyDispatches, partyPayments, party, lots);
                 const partyProfit = balanceResult.totalProfit;
                 const outstandingBalance = balanceResult.outstandingBalance;
                 const isCleared = balanceResult.isCleared;
@@ -551,6 +659,28 @@ export default function PartiesList() {
                             >
                               {party.name}
                             </span>
+
+                            {/* Role Badge: Direct Mine vs Supplier vs Buyer */}
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 700,
+                                color: isDirectMine ? '#007AFF' : isSupplier ? '#FF9500' : 'var(--ios-blue)',
+                                background: isDirectMine ? 'rgba(0, 122, 255, 0.12)' : isSupplier ? 'rgba(255, 149, 0, 0.12)' : 'rgba(10, 132, 255, 0.12)',
+                                border: `1px solid ${isDirectMine ? 'rgba(0, 122, 255, 0.28)' : isSupplier ? 'rgba(255, 149, 0, 0.28)' : 'rgba(10, 132, 255, 0.28)'}`,
+                                padding: '1px 6px',
+                                borderRadius: 5,
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 3,
+                                textTransform: 'uppercase',
+                                letterSpacing: 0.3
+                              }}
+                            >
+                              {isDirectMine ? <Pickaxe size={10} /> : isSupplier ? <Store size={10} /> : <Building2 size={10} />}
+                              <span>{isDirectMine ? 'Direct Mine' : isSupplier ? 'Supplier' : 'Buyer'}</span>
+                            </span>
+
                             {(duplicateNameMap[party.name.trim().toLowerCase()] || 0) > 1 && (
                               <span
                                 style={{
@@ -581,7 +711,11 @@ export default function PartiesList() {
                               textOverflow: 'ellipsis'
                             }}
                           >
-                            {party.contactPerson ? `${party.contactPerson} · ` : ''}{party.phone || party.address || 'No phone added'}
+                            {party.contactPerson
+                              ? `${party.contactPerson} · ${party.phone || party.address || 'Mine Owner'}`
+                              : isDirectMine
+                              ? (party.phone ? `${party.phone} · Direct Mine Account` : 'Direct Mine Owner Account · Inventory Linked')
+                              : (party.phone || party.address || 'No phone added')}
                           </div>
                         </div>
 
@@ -619,67 +753,108 @@ export default function PartiesList() {
 
                       {/* Row 2: Outstanding / Advance Balance Pill + Quick Call Button */}
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, gap: 8 }}>
-                        {outstandingBalance > 0 ? (
-                          <span style={{
-                            fontSize: 12,
-                            fontWeight: 700,
-                            color: 'white',
-                            background: 'var(--ios-orange)',
-                            padding: '3px 9px',
-                            borderRadius: 7,
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 5,
-                            whiteSpace: 'nowrap',
-                            flexShrink: 0
-                          }} className="tabular-nums">
-                            Due&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(outstandingBalance, settings)}
-                          </span>
-                        ) : outstandingBalance < 0 ? (
-                          <span style={{
-                            fontSize: 12,
-                            fontWeight: 700,
-                            color: 'white',
-                            background: 'var(--ios-blue)',
-                            padding: '3px 9px',
-                            borderRadius: 7,
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 5,
-                            whiteSpace: 'nowrap',
-                            flexShrink: 0
-                          }} className="tabular-nums">
-                            Adv&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(Math.abs(outstandingBalance), settings)}
-                          </span>
-                        ) : isCleared ? (
-                          <span style={{
-                            fontSize: 12,
-                            fontWeight: 700,
-                            color: 'white',
-                            background: 'var(--ios-green)',
-                            padding: '3px 9px',
-                            borderRadius: 7,
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: 5,
-                            whiteSpace: 'nowrap',
-                            flexShrink: 0
-                          }}>
-                            Settled
-                          </span>
+                        {isSupplier ? (
+                          outstandingBalance > 50 ? (
+                            <span style={{
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: '#FFFFFF',
+                              background: '#FF9500',
+                              padding: '3px 9px',
+                              borderRadius: 7,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 5,
+                              whiteSpace: 'nowrap',
+                              flexShrink: 0
+                            }} className="tabular-nums">
+                              Payable&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(outstandingBalance, settings)}
+                            </span>
+                          ) : outstandingBalance < -50 ? (
+                            <span style={{
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: '#FFFFFF',
+                              background: 'var(--ios-blue)',
+                              padding: '3px 9px',
+                              borderRadius: 7,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 5,
+                              whiteSpace: 'nowrap',
+                              flexShrink: 0
+                            }} className="tabular-nums">
+                              Adv Paid&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(Math.abs(outstandingBalance), settings)}
+                            </span>
+                          ) : isCleared ? (
+                            <span style={{
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: 'var(--ios-green)',
+                              background: 'rgba(52, 199, 89, 0.1)',
+                              padding: '3px 9px',
+                              borderRadius: 7,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 5
+                            }}>
+                              <Check size={13} strokeWidth={2.5} />
+                              <span>Settled</span>
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 12, color: 'var(--label-tertiary)' }}>No ledger</span>
+                          )
                         ) : (
-                          <span style={{
-                            fontSize: 11,
-                            fontWeight: 600,
-                            color: 'var(--label-tertiary)',
-                            background: 'var(--fill-tertiary)',
-                            padding: '2px 8px',
-                            borderRadius: 6,
-                            whiteSpace: 'nowrap',
-                            flexShrink: 0
-                          }}>
-                            No Ledger
-                          </span>
+                          outstandingBalance > 50 ? (
+                            <span style={{
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: 'white',
+                              background: 'var(--ios-orange)',
+                              padding: '3px 9px',
+                              borderRadius: 7,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 5,
+                              whiteSpace: 'nowrap',
+                              flexShrink: 0
+                            }} className="tabular-nums">
+                              Due&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(outstandingBalance, settings)}
+                            </span>
+                          ) : outstandingBalance < -50 ? (
+                            <span style={{
+                              fontSize: 12,
+                              fontWeight: 700,
+                              color: 'white',
+                              background: 'var(--ios-blue)',
+                              padding: '3px 9px',
+                              borderRadius: 7,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 5,
+                              whiteSpace: 'nowrap',
+                              flexShrink: 0
+                            }} className="tabular-nums">
+                              Advance&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(Math.abs(outstandingBalance), settings)}
+                            </span>
+                          ) : isCleared ? (
+                            <span style={{
+                              fontSize: 12,
+                              fontWeight: 600,
+                              color: 'var(--ios-green)',
+                              background: 'rgba(52, 199, 89, 0.1)',
+                              padding: '3px 9px',
+                              borderRadius: 7,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 5
+                            }}>
+                              <Check size={13} strokeWidth={2.5} />
+                              <span>Settled</span>
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 12, color: 'var(--label-tertiary)' }}>No ledger</span>
+                          )
                         )}
 
                         {/* Quick Call Action */}
@@ -712,7 +887,9 @@ export default function PartiesList() {
                       {/* Row 3: Operational Metrics (Dispatches & Net Profit) */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8 }}>
                         <span className="dispatch-status-badge">
-                          {partyDispatches.length} {partyDispatches.length === 1 ? 'Dispatch' : 'Dispatches'}
+                          {isSupplier
+                            ? `${partyLots.length} ${partyLots.length === 1 ? 'Delivery' : 'Deliveries'}`
+                            : `${partyDispatches.length} ${partyDispatches.length === 1 ? 'Dispatch' : 'Dispatches'}`}
                         </span>
 
                         {partyProfit > 0 ? (
@@ -769,15 +946,22 @@ export default function PartiesList() {
               <div style={{ fontSize: 16, fontWeight: 500 }}>No Parties Found</div>
             </div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
+            <div className="parties-grid-container" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
               {filteredParties.map((party) => {
+                const isSupplier = party.type === 'supplier';
+                const isDirectMine = Boolean(party.isDirectMine || party.linkedMineId || party.name.toLowerCase().includes('direct ledger'));
+                const cleanName = party.name.trim().toLowerCase();
                 const partyDispatches = dispatches.filter((d) =>
-                  d.partyId === party.id || (!d.partyId && d.factoryName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+                  d.partyId === party.id || (!d.partyId && d.factoryName?.trim().toLowerCase() === cleanName)
                 );
                 const partyPayments = payments.filter((p) =>
-                  p.partyId === party.id || (!p.partyId && (p as any).partyName?.trim().toLowerCase() === party.name.trim().toLowerCase())
+                  p.partyId === party.id || (!p.partyId && (p as any).partyName?.trim().toLowerCase() === cleanName)
                 );
-                const balanceResult = calculatePartyBalance(partyDispatches, partyPayments);
+                const partyLots = isSupplier ? lots.filter((l) =>
+                  !l.deleted && (l.supplierId === party.id || (!l.supplierId && (l.supplier || l.boughtFrom || '').trim().toLowerCase() === cleanName))
+                ) : [];
+
+                const balanceResult = calculatePartyBalance(partyDispatches, partyPayments, party, lots);
                 const partyProfit = balanceResult.totalProfit;
                 const outstandingBalance = balanceResult.outstandingBalance;
                 const isCleared = balanceResult.isCleared;
@@ -868,20 +1052,41 @@ export default function PartiesList() {
                         </div>
                       </div>
 
-                      {/* Party Name */}
-                      <div
-                        style={{
-                          fontSize: 15,
-                          fontWeight: 700,
-                          color: 'var(--label-primary)',
-                          lineHeight: 1.25,
-                          overflow: 'hidden',
-                          display: '-webkit-box',
-                          WebkitLineClamp: 2,
-                          WebkitBoxOrient: 'vertical'
-                        }}
-                      >
-                        {party.name}
+                      {/* Party Name and Role Badge */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+                        <span
+                          style={{
+                            fontSize: 15,
+                            fontWeight: 700,
+                            color: 'var(--label-primary)',
+                            lineHeight: 1.25,
+                            overflow: 'hidden',
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical'
+                          }}
+                        >
+                          {party.name}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 9.5,
+                            fontWeight: 700,
+                            color: isDirectMine ? '#007AFF' : isSupplier ? '#FF9500' : 'var(--ios-blue)',
+                            background: isDirectMine ? 'rgba(0, 122, 255, 0.12)' : isSupplier ? 'rgba(255, 149, 0, 0.12)' : 'rgba(10, 132, 255, 0.12)',
+                            border: `1px solid ${isDirectMine ? 'rgba(0, 122, 255, 0.28)' : isSupplier ? 'rgba(255, 149, 0, 0.28)' : 'rgba(10, 132, 255, 0.28)'}`,
+                            padding: '1px 5px',
+                            borderRadius: 4,
+                            textTransform: 'uppercase',
+                            letterSpacing: 0.3,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 3
+                          }}
+                        >
+                          {isDirectMine ? <Pickaxe size={9} /> : null}
+                          <span>{isDirectMine ? 'Direct Mine' : isSupplier ? 'Supplier' : 'Buyer'}</span>
+                        </span>
                       </div>
                       {(duplicateNameMap[party.name.trim().toLowerCase()] || 0) > 1 && (
                         <div style={{ marginTop: 2 }}>
@@ -922,35 +1127,57 @@ export default function PartiesList() {
                     <div style={{ marginTop: 12, paddingTop: 10, borderTop: '0.5px solid var(--separator)', display: 'flex', flexDirection: 'column', gap: 4 }}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <span style={{ fontSize: 11, color: 'var(--label-tertiary)', fontWeight: 500 }}>
-                          {partyDispatches.length} {partyDispatches.length === 1 ? 'truck' : 'trucks'}
+                          {isSupplier
+                            ? `${partyLots.length} ${partyLots.length === 1 ? 'delivery' : 'deliveries'}`
+                            : `${partyDispatches.length} ${partyDispatches.length === 1 ? 'truck' : 'trucks'}`}
                         </span>
 
-                        {partyProfit > 0 ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-green)' }} className="tabular-nums">
-                            +{(partyProfit / 1000).toFixed(0)}k
-                          </span>
-                        ) : partyProfit < 0 ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-red)' }} className="tabular-nums">
-                            -{(Math.abs(partyProfit) / 1000).toFixed(0)}k
-                          </span>
-                        ) : null}
+                        {!isSupplier && (
+                          partyProfit > 0 ? (
+                            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-green)' }} className="tabular-nums">
+                              +{(partyProfit / 1000).toFixed(0)}k
+                            </span>
+                          ) : partyProfit < 0 ? (
+                            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-red)' }} className="tabular-nums">
+                              -{(Math.abs(partyProfit) / 1000).toFixed(0)}k
+                            </span>
+                          ) : null
+                        )}
                       </div>
 
                       <div>
-                        {outstandingBalance > 0 ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-orange)', padding: '0px 9px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
-                            Due&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(outstandingBalance, settings)}
-                          </span>
-                        ) : outstandingBalance < 0 ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-blue)', padding: '3px 9px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
-                            Adv&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(Math.abs(outstandingBalance), settings)}
-                          </span>
-                        ) : isCleared ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-green)', display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap' }}>
-                            Settled
-                          </span>
+                        {isSupplier ? (
+                          outstandingBalance > 50 ? (
+                            <span style={{ fontSize: 11, fontWeight: 700, color: '#FFFFFF', background: '#FF9500', padding: '2px 8px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
+                              Payable&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(outstandingBalance, settings)}
+                            </span>
+                          ) : outstandingBalance < -50 ? (
+                            <span style={{ fontSize: 11, fontWeight: 700, color: '#FFFFFF', background: 'var(--ios-blue)', padding: '2px 8px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
+                              Adv Paid&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(Math.abs(outstandingBalance), settings)}
+                            </span>
+                          ) : isCleared ? (
+                            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-green)', display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap' }}>
+                              Settled
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 11, color: 'var(--label-tertiary)', whiteSpace: 'nowrap' }}>No ledger</span>
+                          )
                         ) : (
-                          <span style={{ fontSize: 11, color: 'var(--label-tertiary)', whiteSpace: 'nowrap' }}>No ledger</span>
+                          outstandingBalance > 50 ? (
+                            <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-orange)', padding: '2px 8px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
+                              Due&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(outstandingBalance, settings)}
+                            </span>
+                          ) : outstandingBalance < -50 ? (
+                            <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-blue)', padding: '2px 8px', borderRadius: 7, display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }} className="tabular-nums">
+                              Adv&nbsp;:&nbsp;{curSym}&nbsp;{formatAmountNumber(Math.abs(outstandingBalance), settings)}
+                            </span>
+                          ) : isCleared ? (
+                            <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--ios-green)', display: 'inline-flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap' }}>
+                              Settled
+                            </span>
+                          ) : (
+                            <span style={{ fontSize: 11, color: 'var(--label-tertiary)', whiteSpace: 'nowrap' }}>No ledger</span>
+                          )
                         )}
                       </div>
                     </div>
@@ -979,6 +1206,8 @@ export default function PartiesList() {
             contactPerson: data.contactPerson?.trim() || '',
             phone: data.phone?.trim() || '',
             address: data.address?.trim() || '',
+            type: data.type || 'buyer',
+            materialIds: data.materialIds,
             createdAt: Date.now()
           };
 

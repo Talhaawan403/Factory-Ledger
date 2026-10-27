@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import {
   ChevronLeft,
@@ -16,8 +16,9 @@ import {
   Plus,
   ChevronDown,
   Package,
+  Building2,
 } from 'lucide-react';
-import type { Dispatch, CoalInput, Party, PurchaseOrder, AppSettings, InventoryLot, Mine } from '../types';
+import type { Dispatch, CoalInput, Party, PurchaseOrder, AppSettings, InventoryLot, Mine, SupplierProfile } from '../types';
 import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, getLots, getMines, saveParty, getSettings, cleanNumber } from '../lib/db';
 import { getTodayDateString } from '../utils/dateUtils';
 import { calculateSettlement, getEffectiveAdjustments, calculateLotAvailabilityForDispatch, calculateMineAvailabilityForDispatch } from '../utils/calculations';
@@ -30,6 +31,13 @@ import CoalSourceModal, { type CoalSourceSelection } from '../components/CoalSou
 import PartyGlyph from '../components/PartyGlyph';
 import PartyModalSheet from '../components/PartyModalSheet';
 import { triggerConfetti, playSuccessSound, playPopSound } from '../utils/delight';
+import {
+  COAL_ITEM_ID,
+  getMaterialForDispatch,
+  getMaterialItems,
+  suppliersForMaterial,
+  withMaterialSnapshot,
+} from '../utils/materials';
 
 const defaultOverheads = {
   loading: 0,
@@ -45,6 +53,11 @@ const emptyDispatch: Omit<Dispatch, 'id' | 'createdAt' | 'updatedAt'> = {
   date: getTodayDateString(),
   truckNumber: '',
   factoryName: '',
+  itemId: COAL_ITEM_ID,
+  itemName: 'Coal',
+  pricingModel: 'gcv',
+  qualityLabel: 'GCV',
+  qualityUnit: 'kcal/kg',
   targetGcv: 0,
   baseRate: 0,
   commissionPerTon: 0,
@@ -210,6 +223,24 @@ export default function DispatchForm() {
     return () => window.removeEventListener('ledger_data_changed', handleLedgerChange);
   }, []);
 
+  const currentMaterial = getMaterialForDispatch(dispatch, settings);
+  const availableSuppliers = useMemo<SupplierProfile[]>(() => {
+    const partySuppliers: SupplierProfile[] = parties
+      .filter((p) => p.type === 'supplier' && !p.isArchived && !p.deleted)
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        contactPerson: p.contactPerson,
+        phone: p.phone,
+        address: p.address,
+        isArchived: false,
+      }));
+    if (partySuppliers.length > 0) {
+      return partySuppliers;
+    }
+    return suppliersForMaterial(settings, currentMaterial.id);
+  }, [parties, settings, currentMaterial.id]);
+
   if (isLoading || !dispatch) {
     return (
       <div style={{ padding: 40, textAlign: 'center', color: 'var(--label-secondary)', fontSize: 15 }}>
@@ -222,6 +253,9 @@ export default function DispatchForm() {
   const settlement = calculateSettlement(dispatch as Dispatch, settings);
   const adj = getEffectiveAdjustments(dispatch as Dispatch, settings);
   const isProfit = settlement.netProfit >= 0;
+  const materialItems = getMaterialItems(settings);
+  const isCoalMaterial = currentMaterial.pricingModel === 'gcv';
+  const isPurityMaterial = currentMaterial.pricingModel === 'purity';
 
   // Blend metrics
   const coalInputsList = dispatch.coalInputs || [];
@@ -258,12 +292,12 @@ export default function DispatchForm() {
     }
     const totalLoaded = (dispatch.coalInputs || []).reduce((sum, ci) => sum + cleanNumber(ci.weight), 0);
     if (totalLoaded <= 0) {
-      errors.coalInputs = 'Loaded coal recipe weight must be greater than 0';
+      errors.coalInputs = `Loaded ${currentMaterial.name.toLowerCase()} weight must be greater than 0`;
     } else {
       const duplicateLotIds = new Set<string>();
       for (const input of dispatch.coalInputs || []) {
         if (!input.sourceName.trim()) {
-          errors.coalInputs = 'Every coal source needs a source name';
+          errors.coalInputs = `Every ${currentMaterial.name.toLowerCase()} source needs a source name`;
           break;
         }
         if (!Number.isFinite(input.weight) || input.weight <= 0) {
@@ -293,13 +327,20 @@ export default function DispatchForm() {
         }
       }
     }
-    if (cleanNumber(dispatch.baseRate) <= 0) {
+    if (isPurityMaterial) {
+      if (cleanNumber(dispatch.ratePerQualityUnit) <= 0) {
+        errors.ratePerQualityUnit = `Rate per ${currentMaterial.qualityLabel?.toLowerCase() || 'quality point'} must be greater than 0`;
+      }
+      if (!isInTransit && cleanNumber(dispatch.receivedQuality) <= 0) {
+        errors.receivedQuality = `Enter factory received ${currentMaterial.qualityLabel?.toLowerCase() || 'quality'} before settlement`;
+      }
+    } else if (cleanNumber(dispatch.baseRate) <= 0) {
       errors.baseRate = 'Base rate must be greater than 0';
     }
     if (!isInTransit && cleanNumber(dispatch.labReceivedWeight) <= 0) {
       errors.labReceivedWeight = 'Enter factory received weight or toggle In-Transit';
     }
-    if (!isInTransit && cleanNumber(dispatch.labActualGcv) <= 0) {
+    if (isCoalMaterial && !isInTransit && cleanNumber(dispatch.labActualGcv) <= 0) {
       errors.labActualGcv = 'Enter the final factory lab GCV before settlement';
     }
     setValidationErrors(errors);
@@ -319,6 +360,9 @@ export default function DispatchForm() {
       const wasSettled = dispatch.status === 'settled';
       const savedDispatchObj = {
         ...dispatch,
+        baseRate: isPurityMaterial
+          ? cleanNumber(dispatch.ratePerQualityUnit) * cleanNumber(dispatch.receivedQuality)
+          : dispatch.baseRate,
         status: statusToSave,
         settledAt: statusToSave === 'settled' ? (wasSettled ? dispatch.settledAt : Date.now()) : undefined,
         settledDate: statusToSave === 'settled' ? (wasSettled ? dispatch.settledDate || dispatch.date : getTodayDateString()) : undefined,
@@ -363,6 +407,40 @@ export default function DispatchForm() {
     setDispatch((prev) => (prev ? { ...prev, [field]: value } : prev));
   };
 
+  const handleMaterialChange = (materialId: string) => {
+    const material = materialItems.find((item) => item.id === materialId);
+    if (!material) return;
+    setValidationErrors({});
+    setDispatch((prev) => {
+      if (!prev) return prev;
+      const next = withMaterialSnapshot({
+        ...prev,
+        poId: '',
+        targetGcv: material.pricingModel === 'gcv' ? prev.targetGcv : 0,
+        labActualGcv: material.pricingModel === 'gcv' ? prev.labActualGcv : 0,
+        labSulphur: material.pricingModel === 'gcv' ? prev.labSulphur : 0,
+        labAsh: material.pricingModel === 'gcv' ? prev.labAsh : 0,
+        labVm: material.pricingModel === 'gcv' ? prev.labVm : 0,
+        labMoisture: material.pricingModel === 'gcv' ? prev.labMoisture : 0,
+        gcvAdjustment: 'manual' as const,
+        baseRate: material.pricingModel === 'flat' ? (material.defaultRate || 0) : 0,
+        ratePerQualityUnit: material.pricingModel === 'purity' ? (material.defaultRate || 0) : undefined,
+        taxIncomePercent: (material.id === 'material-laterite' || material.name.toLowerCase().includes('laterite'))
+          ? 5.5
+          : (prev.taxIncomePercent === 5.5 ? (settings?.taxFormulaIncomePercent ?? 5) : prev.taxIncomePercent),
+        receivedQuality: undefined,
+        coalInputs: prev.coalInputs.map((input) => ({
+          ...input,
+          sourceName: '',
+          mineId: undefined,
+          lotId: undefined,
+          supplierId: undefined,
+        })),
+      }, material);
+      return next;
+    });
+  };
+
   const handlePartyChange = async (newPartyId: string) => {
     clearError('partyId');
     const selectedParty = parties.find((party) => party.id === newPartyId);
@@ -373,8 +451,9 @@ export default function DispatchForm() {
     } : prev);
     const partyOrders = await getPartyPurchaseOrders(newPartyId);
     setPos(partyOrders);
-    if (partyOrders.length > 0) {
-      const activePo = partyOrders.find(p => p.isActive) || partyOrders[0];
+    const matchingOrders = partyOrders.filter((po) => (po.itemId || COAL_ITEM_ID) === currentMaterial.id);
+    if (matchingOrders.length > 0) {
+      const activePo = matchingOrders.find(p => p.isActive) || matchingOrders[0];
       setDispatch(prev => prev ? {
         ...prev,
         partyId: newPartyId,
@@ -385,6 +464,7 @@ export default function DispatchForm() {
         commissionPerTon: activePo.commissionPerTon ?? prev.commissionPerTon,
         gcvAdjustment: activePo.gcvAdjustment || prev.gcvAdjustment || 'manual',
         gcvAdjustmentRounding: activePo.gcvAdjustmentRounding || prev.gcvAdjustmentRounding || 'rupee',
+        ratePerQualityUnit: activePo.ratePerQualityUnit ?? prev.ratePerQualityUnit,
       } : prev);
     } else {
       setDispatch(prev => prev ? {
@@ -407,6 +487,12 @@ export default function DispatchForm() {
         commissionPerTon: po.commissionPerTon ?? prev.commissionPerTon,
         gcvAdjustment: po.gcvAdjustment || prev.gcvAdjustment || 'manual',
         gcvAdjustmentRounding: po.gcvAdjustmentRounding || prev.gcvAdjustmentRounding || 'rupee',
+        itemId: po.itemId || prev.itemId,
+        itemName: po.itemName || prev.itemName,
+        pricingModel: po.pricingModel || prev.pricingModel,
+        qualityLabel: po.qualityLabel || prev.qualityLabel,
+        qualityUnit: po.qualityUnit || prev.qualityUnit,
+        ratePerQualityUnit: po.ratePerQualityUnit ?? prev.ratePerQualityUnit,
       } : prev);
     } else {
       setDispatch(prev => prev ? { ...prev, poId } : prev);
@@ -467,6 +553,7 @@ export default function DispatchForm() {
             ? {
               ...ci,
               mineId: sel.mineId,
+              supplierId: sel.supplierId,
               lotId: sel.lotId,
               sourceName: sel.sourceName,
               weight: sel.weight > 0 ? sel.weight : ci.weight,
@@ -489,6 +576,7 @@ export default function DispatchForm() {
             ? {
               ...ci,
               mineId: undefined,
+              supplierId: undefined,
               lotId: undefined,
             }
             : ci
@@ -596,6 +684,25 @@ export default function DispatchForm() {
           <ClipboardList size={16} /> Dispatch Details
         </div>
         <div style={{ padding: '0 16px' }}>
+          <IOSSelect
+            label="Material / Item"
+            value={currentMaterial.id}
+            onChange={handleMaterialChange}
+            options={materialItems.map((item) => ({
+              value: item.id,
+              label: item.name,
+              subtitle: item.pricingModel === 'gcv'
+                ? 'GCV contract pricing'
+                : item.pricingModel === 'purity'
+                  ? `${item.qualityLabel || 'Purity'} × rate per point`
+                  : 'Flat rate per ton',
+              badge: item.pricingModel === 'purity' ? 'Purity' : item.pricingModel === 'gcv' ? 'GCV' : 'Per Ton',
+            }))}
+            placeholder="Select material"
+            title="Select Material / Item"
+            floating
+          />
+
           {/* Party / Factory Picker */}
           <IOSSelect
             label="Factory"
@@ -620,15 +727,17 @@ export default function DispatchForm() {
             }}
           />
 
-          {pos.length > 0 && (
+          {pos.filter((po) => (po.itemId || COAL_ITEM_ID) === currentMaterial.id).length > 0 && (
             <IOSSelect
               label="Purchase Order (PO)"
               value={dispatch.poId || ''}
               onChange={handlePOChange}
-              options={pos.map((p) => ({
+              options={pos.filter((po) => (po.itemId || COAL_ITEM_ID) === currentMaterial.id).map((p) => ({
                 value: p.id,
                 label: `PO #${p.poNumber}`,
-                subtitle: `Base: ${curSym} ${formatAmountNumber(p.baseRate, settings)} • Target GCV: ${p.targetGcv}${p.commissionPerTon ? ` • Comm: ${curSym} ${p.commissionPerTon}/t` : ''}`,
+                subtitle: p.pricingModel === 'purity'
+                  ? `${curSym} ${formatAmountNumber(p.ratePerQualityUnit || 0, settings)} per ${p.qualityLabel || 'purity'} point`
+                  : `Base: ${curSym} ${formatAmountNumber(p.baseRate, settings)}${(p.pricingModel || 'gcv') === 'gcv' ? ` • Target GCV: ${p.targetGcv}` : ''}${p.commissionPerTon ? ` • Comm: ${curSym} ${p.commissionPerTon}/t` : ''}`,
                 badge: p.isActive ? 'Active' : undefined,
               }))}
               placeholder="Select Purchase Order"
@@ -664,25 +773,61 @@ export default function DispatchForm() {
         <div className="ios-group-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <FileText size={16} /> Contract Agreement Terms
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, padding: '0 16px' }}>
-          <FloatingField
-            label="Target GCV"
-            type="number"
-            value={dispatch.targetGcv || ''}
-            onChange={(v) => handleChange('targetGcv', parseFloat(v) || 0)}
-            placeholder="6000"
-            suffix="kcal/kg"
-          />
-          <FloatingField
-            label="Base Rate"
-            type="number"
-            value={dispatch.baseRate || ''}
-            onChange={(v) => handleChange('baseRate', parseFloat(v) || 0)}
-            error={validationErrors.baseRate}
-            placeholder="8500"
-            suffix={`${curSym}/t`}
-          />
-        </div>
+        {isCoalMaterial ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, padding: '0 16px' }}>
+            <FloatingField
+              label="Target GCV"
+              type="number"
+              value={dispatch.targetGcv || ''}
+              onChange={(v) => handleChange('targetGcv', parseFloat(v) || 0)}
+              placeholder="6000"
+              suffix="kcal/kg"
+            />
+            <FloatingField
+              label="Base Rate"
+              type="number"
+              value={dispatch.baseRate || ''}
+              onChange={(v) => handleChange('baseRate', parseFloat(v) || 0)}
+              error={validationErrors.baseRate}
+              placeholder="8500"
+              suffix={`${curSym}/t`}
+            />
+          </div>
+        ) : isPurityMaterial ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, padding: '0 16px' }}>
+            <FloatingField
+              label={`Rate per ${currentMaterial.qualityLabel || 'Purity'} Point`}
+              type="number"
+              step="0.01"
+              value={dispatch.ratePerQualityUnit || ''}
+              onChange={(v) => handleChange('ratePerQualityUnit', parseFloat(v) || 0)}
+              error={validationErrors.ratePerQualityUnit}
+              placeholder={String(currentMaterial.defaultRate || 116)}
+              suffix={curSym}
+            />
+            <FloatingField
+              label="Calculated Rate"
+              type="number"
+              value={cleanNumber(dispatch.ratePerQualityUnit) * cleanNumber(dispatch.receivedQuality) || ''}
+              onChange={() => {}}
+              disabled
+              suffix={`${curSym}/t`}
+              helperText={`${dispatch.ratePerQualityUnit || 0} × ${dispatch.receivedQuality || 0} ${currentMaterial.qualityUnit || '%'}`}
+            />
+          </div>
+        ) : (
+          <div style={{ padding: '0 16px' }}>
+            <FloatingField
+              label={`${currentMaterial.name} Rate`}
+              type="number"
+              value={dispatch.baseRate || ''}
+              onChange={(v) => handleChange('baseRate', parseFloat(v) || 0)}
+              error={validationErrors.baseRate}
+              placeholder="Rate per ton"
+              suffix={`${curSym}/t`}
+            />
+          </div>
+        )}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 10, padding: '0 16px' }}>
           <FloatingField
             label="Commission (deducted/t)"
@@ -695,11 +840,11 @@ export default function DispatchForm() {
         </div>
       </div>
 
-      {/* ── Section 3: Coal Input Recipe & Blending ── */}
+      {/* ── Section 3: Material Sources ── */}
       <div className="ios-group">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 16px 8px' }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: validationErrors.coalInputs ? '#ff3b30' : 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: 0.3 }}>
-            <Layers size={16} /> Coal Blending Recipe ({dispatch.coalInputs.length})
+            <Layers size={16} /> {currentMaterial.name} Sources ({dispatch.coalInputs.length})
           </span>
           <button
             onClick={addCoalInput}
@@ -802,7 +947,6 @@ export default function DispatchForm() {
                   </div>
                 </div>
 
-                {/* Native iOS-styled Coal Mine & Stock Picker with grouped dropdown */}
                 <div style={{ marginBottom: 12 }}>
                   <div
                     onClick={() => setActivePickingInputId(input.id)}
@@ -820,7 +964,7 @@ export default function DispatchForm() {
                   >
                     <div style={{ minWidth: 0, flex: 1, marginRight: 8 }}>
                       <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--label-secondary)', textTransform: 'uppercase' }}>
-                        Coal Mine / Stock Source
+                        {isCoalMaterial ? 'Coal Mine / Stock Source' : `${currentMaterial.name} Supplier / Stock Batch`}
                       </div>
                       <div
                         style={{
@@ -833,13 +977,13 @@ export default function DispatchForm() {
                           whiteSpace: 'nowrap',
                         }}
                       >
-                        {input.sourceName || 'Select Mine or Stock Entry'}
+                        {input.sourceName || (isCoalMaterial ? 'Select Mine or Stock Entry' : `Select ${currentMaterial.name} Supplier or Batch`)}
                       </div>
                     </div>
 
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
                       <span style={{ fontSize: 13, color: 'var(--ios-blue)', fontWeight: 600 }}>
-                        {input.mineId || input.lotId ? 'Change' : 'Select'}
+                        {input.mineId || input.supplierId || input.lotId ? 'Change' : 'Select'}
                       </span>
                       <ChevronDown size={16} style={{ color: 'var(--label-tertiary)' }} />
                     </div>
@@ -911,7 +1055,7 @@ export default function DispatchForm() {
                         <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
                           <Layers size={14} style={{ flexShrink: 0 }} />
                           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            <strong>{linkedMine.name}</strong>: {availability.availableBeforeThis.toFixed(1)}t available (legacy untracked source)
+                            <strong>{linkedMine.name}</strong>: {availability.availableBeforeThis.toFixed(1)}t available (direct mine dispatch)
                           </span>
                         </span>
                         {isOverdraw && (
@@ -920,15 +1064,47 @@ export default function DispatchForm() {
                       </div>
                     );
                   })()}
+
+                  {/* Stock status indicator if Supplier is linked without a specific lot */}
+                  {input.supplierId && !input.lotId && (() => {
+                    const linkedSupplier = availableSuppliers.find((s) => s.id === input.supplierId);
+                    if (!linkedSupplier) return null;
+
+                    return (
+                      <div
+                        style={{
+                          marginTop: 8,
+                          marginBottom: 4,
+                          padding: '8px 12px',
+                          borderRadius: 10,
+                          background: 'var(--fill-tertiary)',
+                          border: '0.5px solid var(--separator)',
+                          fontSize: 12,
+                          color: 'var(--label-primary)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                        }}
+                      >
+                        <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          <Building2 size={14} style={{ flexShrink: 0, color: 'var(--ios-blue)' }} />
+                          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            Direct supplier dispatch: <strong>{linkedSupplier.name}</strong>
+                          </span>
+                        </span>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <FloatingField
-                  label="Coal Source / Grade"
+                  label={isCoalMaterial ? 'Coal Source / Grade' : `${currentMaterial.name} Source / Grade`}
                   value={input.sourceName}
                   onChange={(val) => updateCoalInput(input.id, 'sourceName', val)}
-                  placeholder="e.g. Afghan 6000 or Duki Mine"
-                  disabled={Boolean(input.lotId)}
-                  helperText={input.lotId ? 'Linked to the selected stock voucher. Tap Change to use another source.' : undefined}
+                  placeholder={isCoalMaterial ? 'e.g. Afghan 6000 or Duki Mine' : `e.g. ${currentMaterial.name} supplier or stock source`}
+                  disabled={Boolean(input.lotId || input.supplierId)}
+                  helperText={input.lotId ? 'Linked to the selected stock voucher. Tap Change to use another source.' : input.supplierId ? 'Filled from the selected supplier.' : undefined}
                 />
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -968,7 +1144,7 @@ export default function DispatchForm() {
         )}
 
         <div className="ios-group-footnote" style={{ padding: '8px 18px 0' }}>
-          Total Blend Weight: <strong>{totalInputWeight.toFixed(1)} tons</strong> · Avg Coal Purchase Rate: <strong>{curSym} {formatAmountNumber(avgCoalPurchaseRate, settings)}/t</strong>
+          Total Loaded Weight: <strong>{totalInputWeight.toFixed(1)} tons</strong> · Avg {currentMaterial.name} Purchase Rate: <strong>{curSym} {formatAmountNumber(avgCoalPurchaseRate, settings)}/t</strong>
         </div>
       </div>
 
@@ -1022,14 +1198,14 @@ export default function DispatchForm() {
         </div>
       </div>
 
-      {/* ── Section 5: Factory Lab Results ── */}
+      {/* ── Section 5: Factory Receipt & Quality ── */}
       <div className="ios-group">
         <div className="ios-group-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <TestTubes size={16} /> Factory Lab Test Results
+          <TestTubes size={16} /> {isCoalMaterial ? 'Factory Lab Test Results' : `Factory Received ${currentMaterial.name}`}
         </div>
         <div style={{ padding: '0 16px' }}>
           {/* Caloric Quality Gauge Bar */}
-          {Boolean(dispatch.targetGcv && dispatch.labActualGcv) && (() => {
+          {isCoalMaterial && Boolean(dispatch.targetGcv && dispatch.labActualGcv) && (() => {
             const ratio = (dispatch.labActualGcv / dispatch.targetGcv) * 100;
             const cappedPercent = Math.min(Math.max(ratio, 70), 130);
             const normalizedBar = ((cappedPercent - 70) / 60) * 100;
@@ -1172,16 +1348,30 @@ export default function DispatchForm() {
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <FloatingField
-              label="Lab GCV"
-              type="number"
-              suffix="kcal/kg"
-              value={dispatch.labActualGcv || ''}
-              onChange={(v) => handleChange('labActualGcv', parseFloat(v) || 0)}
-              error={validationErrors.labActualGcv}
-              placeholder="5950"
-            />
+          <div style={{ display: 'grid', gridTemplateColumns: isCoalMaterial || currentMaterial.qualityLabel ? '1fr 1fr' : '1fr', gap: 10 }}>
+            {isCoalMaterial ? (
+              <FloatingField
+                label="Lab GCV"
+                type="number"
+                suffix="kcal/kg"
+                value={dispatch.labActualGcv || ''}
+                onChange={(v) => handleChange('labActualGcv', parseFloat(v) || 0)}
+                error={validationErrors.labActualGcv}
+                placeholder="5950"
+              />
+            ) : currentMaterial.qualityLabel ? (
+              <FloatingField
+                label={`Received ${currentMaterial.qualityLabel}`}
+                type="number"
+                step="0.01"
+                suffix={currentMaterial.qualityUnit || '%'}
+                value={dispatch.receivedQuality || ''}
+                onChange={(v) => handleChange('receivedQuality', parseFloat(v) || 0)}
+                error={validationErrors.receivedQuality}
+                placeholder={isPurityMaterial ? '30' : 'Optional'}
+                helperText={isPurityMaterial ? `${curSym} ${dispatch.ratePerQualityUnit || 0} × ${dispatch.receivedQuality || 0} = ${curSym} ${(cleanNumber(dispatch.ratePerQualityUnit) * cleanNumber(dispatch.receivedQuality)).toFixed(2)}/t` : undefined}
+              />
+            ) : null}
             <FloatingField
               label="Rcvd Weight"
               type="number"
@@ -1193,6 +1383,7 @@ export default function DispatchForm() {
               placeholder="39.5"
             />
           </div>
+          {isCoalMaterial && <>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <FloatingField
               label="Sulphur %"
@@ -1254,6 +1445,7 @@ export default function DispatchForm() {
               </span>
             </div>
           )}
+          </>}
 
           {totalInputWeight > 0 && dispatch.labReceivedWeight > 0 && (
             <div className="ios-group-footnote" style={{ padding: '6px 4px 0' }}>
@@ -1270,6 +1462,7 @@ export default function DispatchForm() {
         </div>
         <div style={{ padding: '0 16px' }}>
           {/* GCV Adjustment Mode Switcher */}
+          {isCoalMaterial && (
           <div style={{ marginBottom: 12 }}>
             <div style={{ display: 'flex', background: 'var(--fill-tertiary)', borderRadius: 10, padding: 3, marginBottom: 8 }}>
               <button
@@ -1444,6 +1637,7 @@ export default function DispatchForm() {
               )
             )}
           </div>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <FloatingField
@@ -1463,10 +1657,26 @@ export default function DispatchForm() {
               placeholder="0"
             />
           </div>
+
+          {/* Diesel Deductions / Premium (Escalation / De-escalation) */}
+          <div style={{ marginTop: 10, marginBottom: 12 }}>
+            <FloatingField
+              label="Diesel Deduction / Premium"
+              type="number"
+              step="0.01"
+              suffix={`${curSym}/t`}
+              value={dispatch.dieselRateAdjustment !== undefined && dispatch.dieselRateAdjustment !== 0 ? String(dispatch.dieselRateAdjustment) : ''}
+              onChange={(v) => handleChange('dieselRateAdjustment', v === '' ? 0 : (parseFloat(v) || 0))}
+              placeholder="0"
+              helperText="Enter positive (+) for fuel escalation premium, negative (−) for diesel deduction"
+            />
+          </div>
           {/* Tax Calculation Method */}
           {(() => {
+            const isLateriteMat = currentMaterial.id === 'material-laterite' || currentMaterial.name.toLowerCase().includes('laterite');
+            const defaultMatIncomePct = isLateriteMat ? 5.5 : (settings?.taxFormulaIncomePercent ?? 5);
             const activeDispatchSalesPct = dispatch.taxSalesPercent ?? salesPct;
-            const activeDispatchIncomePct = dispatch.taxIncomePercent ?? incomePct;
+            const activeDispatchIncomePct = dispatch.taxIncomePercent ?? defaultMatIncomePct;
             return (
               <>
                 <IOSSelect
@@ -1612,6 +1822,13 @@ export default function DispatchForm() {
             </div>
           )}
 
+          {settlement.dieselAdjustment !== 0 && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: settlement.dieselAdjustment > 0 ? 'var(--ios-green)' : 'var(--ios-red)' }}>
+              <span>{settlement.dieselAdjustment > 0 ? '+ Diesel Escalation' : '- Diesel De-escalation'}</span>
+              <span className="tabular-nums">{settlement.dieselAdjustment > 0 ? '+' : '-'} {curSym} {Math.abs(settlement.dieselAdjustment).toFixed(2)}</span>
+            </div>
+          )}
+
           <div style={{ height: 0.5, background: 'var(--separator)', margin: '10px 0' }} />
 
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
@@ -1728,6 +1945,8 @@ export default function DispatchForm() {
             contactPerson: data.contactPerson,
             phone: data.phone,
             address: data.address,
+            type: data.type || 'buyer',
+            materialIds: data.materialIds,
             createdAt: Date.now(),
           };
           await saveParty(newParty);
@@ -1743,15 +1962,19 @@ export default function DispatchForm() {
         }}
       />
 
-      {/* Coal Mine & Stock Entry Selection Modal */}
+      {/* Universal Mine & Supplier Stock Entry Selection Modal */}
       <CoalSourceModal
         isOpen={Boolean(activePickingInputId)}
         onClose={() => setActivePickingInputId(null)}
         mines={mines}
+        suppliers={availableSuppliers}
         lots={lots}
         dispatches={allDispatches}
         settings={settings}
+        materialId={currentMaterial.id}
+        materialName={currentMaterial.name}
         currentMineId={dispatch.coalInputs.find((ci) => ci.id === activePickingInputId)?.mineId}
+        currentSupplierId={dispatch.coalInputs.find((ci) => ci.id === activePickingInputId)?.supplierId}
         currentLotId={dispatch.coalInputs.find((ci) => ci.id === activePickingInputId)?.lotId}
         currentDispatchId={dispatch.id}
         excludeLotIds={(dispatch.coalInputs || [])

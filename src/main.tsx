@@ -11,12 +11,23 @@ syncManager.init();
 registerSW({ immediate: true });
 
 
-if (import.meta.env.DEV) {
-  import('./lib/devSeed').then(({ seedTestData, clearAllData }) => {
-    (window as any).seedTestData = seedTestData;
-    (window as any).clearAllData = clearAllData;
-    console.log('[Dev] Tip: Type seedTestData() in console to populate test data, or clearAllData() to reset.');
-  });
+// Expose test data seeding for ADB, DevTools, and CLI
+(window as any).seedTestData = async (options?: { reload?: boolean; clearBeforeSeed?: boolean }) => {
+  const { seedTestData } = await import('./lib/devSeed');
+  return seedTestData(options);
+};
+(window as any).clearAllData = async (options?: { reload?: boolean }) => {
+  const { clearAllData } = await import('./lib/devSeed');
+  return clearAllData(options);
+};
+
+// Check if devSeed was requested via URL query or pending intent flag
+if (
+  (typeof window !== 'undefined' && window.location.search.includes('devSeed=true')) ||
+  (window as any).__pendingDevSeed
+) {
+  delete (window as any).__pendingDevSeed;
+  (window as any).seedTestData({ reload: true, clearBeforeSeed: true });
 }
 
 createRoot(document.getElementById('root')!).render(

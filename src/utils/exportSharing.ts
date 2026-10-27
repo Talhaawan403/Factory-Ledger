@@ -2,11 +2,12 @@ import { Share } from '@capacitor/share';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Capacitor } from '@capacitor/core';
 import type ExcelJS from 'exceljs';
-import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings } from '../types';
+import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings, InventoryLot } from '../types';
 import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending, getEffectiveAdjustments, roundPartyLedgerAmount } from './calculations';
 import { getSettings, getExportBackupData, getSyncConflictHistory } from '../lib/db';
 import { getTodayDateString, formatDisplayDate } from './dateUtils';
 import { getCurrencySymbol, formatAmountNumber, getCurrencyExcelFormat } from './currency';
+import { getMaterialForDispatch } from './materials';
 
 // On-demand dynamic loaders for heavy export engines (Issue 15: Bundle Performance)
 async function loadHtml2Canvas() {
@@ -57,7 +58,7 @@ export async function captureReceiptPng(element: HTMLElement): Promise<string> {
     allowTaint: false,
     logging: false,
     imageTimeout: 8000,
-    backgroundColor: '#EEF2F6',
+    backgroundColor: '#F2F2F7',
     width,
     height,
     windowWidth: width,
@@ -180,13 +181,14 @@ export async function shareReceiptImage(
   const safeTruck = (dispatch.truckNumber || 'truck').replace(/[^a-zA-Z0-9_-]/g, '_');
   const fileName = `Receipt-${safeTruck}-${dispatch.date}.png`;
   const partyName = party?.name || dispatch.factoryName || 'Factory';
+  const material = getMaterialForDispatch(dispatch);
 
   await shareBase64File({
     data: dataUrl,
     fileName,
     mimeType: 'image/png',
     title: `Receipt - ${dispatch.truckNumber || 'Dispatch'}`,
-    text: `Coal Dispatch Settlement Receipt for ${dispatch.truckNumber} delivered to ${partyName} on ${formatDisplayDate(dispatch.date)}.`,
+    text: `${material.name} Dispatch Settlement Receipt for ${dispatch.truckNumber} delivered to ${partyName} on ${formatDisplayDate(dispatch.date)}.`,
     dialogTitle: 'Share Dispatch Receipt',
   });
 }
@@ -220,6 +222,82 @@ export async function sharePaymentImage(
     text: `${documentName}: ${curSym} ${formattedAmt} ${directionText} ${party?.name || 'Party'} by ${payment.mode.toUpperCase()} on ${formatDisplayDate(payment.date)}.`,
     dialogTitle: `Share ${documentName}`,
   });
+}
+
+/**
+ * Capture an off-screen or rendered supplier goods received voucher DOM element as a crisp 3x image
+ * and trigger native sharing.
+ */
+export async function shareSupplierDeliveryImage(
+  element: HTMLElement,
+  lot: InventoryLot,
+  party?: Party
+): Promise<void> {
+  const dataUrl = await captureReceiptPng(element);
+  const safeTruck = (lot.truckNumber || 'delivery').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeSupplier = (party?.name || lot.supplier || 'Supplier').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const fileName = `GoodsReceipt-${safeSupplier}-${safeTruck}-${lot.date}.png`;
+
+  const dbSettings = await getSettings();
+  const curSym = getCurrencySymbol(dbSettings.currency);
+  const weight = Number(lot.receivedWeight || lot.billedWeight || lot.tonnage || 0);
+  const rate = Number(lot.purchaseRate || lot.ratePerTon || 0);
+  const freight = Number(lot.freightCost || 0);
+  const totalAmount = lot.totalValue !== undefined ? Number(lot.totalValue) : weight * rate + freight;
+  const formattedAmt = formatAmountNumber(totalAmount, dbSettings);
+
+  await shareBase64File({
+    data: dataUrl,
+    fileName,
+    mimeType: 'image/png',
+    title: `Goods Receipt - ${lot.truckNumber || 'Delivery'}`,
+    text: `Raw Material Goods Received Note: ${weight.toFixed(2)} tons (${curSym} ${formattedAmt}) received from ${party?.name || lot.supplier || 'Supplier'} on ${formatDisplayDate(lot.date)}.`,
+    dialogTitle: 'Share Delivery Receipt',
+  });
+}
+
+/**
+ * Format a clean WhatsApp / SMS text receipt for an inward supplier delivery.
+ */
+export function generateSupplierDeliveryWhatsappText(
+  lot: InventoryLot,
+  party?: Party,
+  settings?: AppSettings
+): string {
+  const curSym = getCurrencySymbol(settings?.currency);
+  const businessName = settings?.businessName?.trim() || 'AWAN COAL LOGISTICS';
+  const supplierName = party?.name || lot.supplier || lot.boughtFrom || 'Supplier';
+  const weight = Number(lot.receivedWeight || lot.billedWeight || lot.tonnage || 0);
+  const rate = Number(lot.purchaseRate || lot.ratePerTon || 0);
+  const freight = Number(lot.freightCost || 0);
+  const materialCost = weight * rate;
+  const totalAmount = lot.totalValue !== undefined ? Number(lot.totalValue) : materialCost + freight;
+  const landedRate = weight > 0 ? (lot.landedRate || totalAmount / weight) : rate;
+
+  const lines = [
+    `*${businessName}*`,
+    `*GOODS RECEIVED NOTE (INWARD)*`,
+    `══════════════════════════`,
+    `*Supplier:* ${supplierName}`,
+    `*Date:* ${formatDisplayDate(lot.date)}`,
+    `*Commodity:* ${lot.itemName || 'Raw Material'}`,
+    lot.grade ? `*Quality / Purity:* ${lot.grade}` : null,
+    `*Truck No:* ${lot.truckNumber || 'N/A'}`,
+    lot.mineName || lot.mineSource ? `*Source / Pit:* ${lot.mineName || lot.mineSource}` : null,
+    lot.storedAt ? `*Storage Yard:* ${lot.storedAt}` : null,
+    `──────────────────────────`,
+    `*Weight:* ${weight.toFixed(2)} Tons`,
+    `*Rate:* ${curSym} ${rate.toLocaleString()} / Ton`,
+    `*Material Cost:* ${curSym} ${formatAmountNumber(materialCost, settings)}`,
+    freight > 0 ? `*Freight Fare:* ${curSym} ${formatAmountNumber(freight, settings)}` : null,
+    `*Total Inward Amount:* ${curSym} ${formatAmountNumber(totalAmount, settings)}`,
+    `*Landed Rate:* ${curSym} ${landedRate.toFixed(2)} / Ton`,
+    `──────────────────────────`,
+    lot.notes ? `*Notes:* ${lot.notes}` : null,
+    `*Status:* Received into stock & credited to supplier ledger.`,
+  ].filter(Boolean);
+
+  return lines.join('\n');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -284,13 +362,14 @@ export function buildPartyStatementData(
       const invoiced = isPending ? 0 : roundPartyLedgerAmount(s.totalRevenue);
       runningBal += invoiced;
       const po = pos?.find((p) => p.id === d.poId);
+      const material = getMaterialForDispatch(d);
 
       rows.push({
         index: idx + 1,
         date: formatDisplayDate(d.date) || '-',
         kind: 'dispatch',
         reference: po?.poNumber || d.truckNumber || '-',
-        description: `Coal Dispatch Delivery (${d.truckNumber || 'Truck'})`,
+        description: `${material.name} Dispatch Delivery (${d.truckNumber || 'Truck'})`,
         weightTons: isPending ? 0 : (d.labReceivedWeight || 0),
         ratePerTon: s.payableRate,
         debit: invoiced,
@@ -439,6 +518,9 @@ export interface ExportDispatchesPdfOptions {
   party?: Party;
   payments?: Payment[];
   dateRange?: string;
+  startDate?: string;
+  endDate?: string;
+  openingBalance?: number;
   dispatches: Dispatch[];
   parties: Party[];
   pos: PurchaseOrder[];
@@ -478,7 +560,10 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
     payments = [],
     pos,
     settings,
+    dateRange,
+    openingBalance = 0,
   } = options;
+  const hasDateRange = Boolean(dateRange && dateRange !== 'All Time');
 
   const party = options.party || options.parties.find((p) => p.name === options.partyName);
   const partyName = party?.name || options.partyName || 'Party Client';
@@ -495,12 +580,18 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
   const margin = 14;
   const contentWidth = pageWidth - margin * 2;
 
-  // 1. Header Bar: Business Info
+  // 1. Executive Top Accent Banner
+  doc.setFillColor(11, 18, 32); // Deep Midnight Obsidian
+  doc.rect(0, 0, pageWidth, 4.5, 'F');
+  doc.setFillColor(197, 160, 89); // Antique Gold Micro-Rule
+  doc.rect(0, 4.5, pageWidth, 0.8, 'F');
+
+  // Header: Business Info
   let headerTextX = margin;
   if (settings.logoUrl && settings.logoUrl.startsWith('data:image')) {
     try {
       const isPng = settings.logoUrl.includes('image/png');
-      doc.addImage(settings.logoUrl, isPng ? 'PNG' : 'JPEG', margin, 11, 14, 14);
+      doc.addImage(settings.logoUrl, isPng ? 'PNG' : 'JPEG', margin, 9, 14, 14);
       headerTextX = margin + 17;
     } catch {
       // ignore if image format unsupported
@@ -508,91 +599,103 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
   }
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(16);
-  doc.setTextColor(15, 23, 42); // slate-900
-  doc.text((settings.businessName || 'AWAN COAL LOGISTICS').toUpperCase(), headerTextX, 18);
+  doc.setFontSize(15);
+  doc.setTextColor(11, 18, 32);
+  doc.text((settings.businessName || 'AWAN COAL LOGISTICS').toUpperCase(), headerTextX, 15.5);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.setTextColor(100, 116, 139); // slate-500
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
   const subline = [
     settings.phoneNumber ? `Tel: ${settings.phoneNumber}` : '',
     settings.ntnNumber ? `NTN: ${settings.ntnNumber}` : '',
     settings.companyAddress ? settings.companyAddress : '',
   ]
     .filter(Boolean)
-    .join('  •  ');
+    .join('   •   ');
   if (subline) {
-    doc.text(subline, headerTextX, 23);
+    doc.text(subline, headerTextX, 20.5);
   }
 
-  // Right-aligned Document Badge
+  // Right-aligned Document Badge & Serial Box
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
-  doc.setTextColor(15, 23, 42);
-  doc.text('STATEMENT OF ACCOUNT', pageWidth - margin, 18, { align: 'right' });
+  doc.setFontSize(10.5);
+  doc.setTextColor(11, 18, 32);
+  doc.text('STATEMENT OF ACCOUNT', pageWidth - margin, 15.5, { align: 'right' });
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
+  doc.setFontSize(7.8);
   doc.setTextColor(100, 116, 139);
-  doc.text(`Date: ${formatDisplayDate(new Date())}`, pageWidth - margin, 23, { align: 'right' });
+  if (hasDateRange) {
+    doc.text(`Period: ${dateRange}`, pageWidth - margin, 19.5, { align: 'right' });
+    doc.setFontSize(7);
+    doc.text(`Issue Date: ${formatDisplayDate(new Date())}`, pageWidth - margin, 23.2, { align: 'right' });
+  } else {
+    doc.text(`Issue Date: ${formatDisplayDate(new Date())}`, pageWidth - margin, 20.5, { align: 'right' });
+  }
 
   // Divider
   doc.setDrawColor(226, 232, 240);
-  doc.setLineWidth(0.5);
-  doc.line(margin, 27, pageWidth - margin, 27);
+  doc.setLineWidth(0.4);
+  doc.line(margin, 24.5, pageWidth - margin, 24.5);
 
-  // 2. Party Information Card
-  const partyCardY = 32;
-  const partyCardHeight = 20;
+  // 2. Party Dossier Card (Account Holder)
+  const partyCardY = 28;
+  const partyCardHeight = 21;
   doc.setFillColor(248, 250, 252);
   doc.roundedRect(margin, partyCardY, contentWidth, partyCardHeight, 2, 2, 'F');
   doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.3);
   doc.roundedRect(margin, partyCardY, contentWidth, partyCardHeight, 2, 2, 'S');
 
+  // Vertical brand accent bar on left edge of party card
+  doc.setFillColor(30, 58, 138); // Royal Sapphire
+  doc.roundedRect(margin, partyCardY, 2.5, partyCardHeight, 1, 1, 'F');
+
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
+  doc.setFontSize(7);
   doc.setTextColor(100, 116, 139);
-  doc.text('ACCOUNT HOLDER / FACTORY:', margin + 4, partyCardY + 6);
+  doc.text('ACCOUNT HOLDER / CONFLICT-FREE RECONCILED DOSSIER:', margin + 6, partyCardY + 5.5);
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
   doc.setTextColor(15, 23, 42);
-  doc.text(partyName, margin + 4, partyCardY + 12);
+  doc.text(partyName, margin + 6, partyCardY + 11.5);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
+  doc.setFontSize(8);
   doc.setTextColor(71, 85, 105);
   const partyMeta = [
     party?.contactPerson ? `Attn: ${party.contactPerson}` : null,
     party?.phone ? `Phone: ${party.phone}` : null,
     party?.address ? `Location: ${party.address}` : null,
   ].filter(Boolean).join('   |   ');
-  doc.text(partyMeta || 'Verified Ledger Account', margin + 4, partyCardY + 17);
+  doc.text(partyMeta || 'Verified Ledger Account', margin + 6, partyCardY + 17);
 
   // 3. Executive KPI Summary Cards
   const balanceResult = calculatePartyBalance(dispatches, payments);
   const totalTons = balanceResult.totalTons;
   const totalBilled = balanceResult.totalBilled;
   const totalReceived = balanceResult.totalPaymentsReceived;
-  const outstanding = balanceResult.outstandingBalance;
+  const outstanding = openingBalance + totalBilled - totalReceived;
 
-  const kpiY = 56;
-  const kpiHeight = 16;
+  const kpiY = 52.5;
+  const kpiHeight = 16.5;
   const kpiGap = 3;
   const kpiWidth = (contentWidth - kpiGap * 3) / 4;
 
   const curSym = getCurrencySymbol(settings.currency);
 
   const kpis = [
-    { label: 'COAL DELIVERED', value: `${totalTons.toFixed(2)} t`, sub: `${dispatches.length} Trucks`, color: [15, 23, 42] },
-    { label: 'TOTAL INVOICED', value: `${curSym} ${formatAmountNumber(totalBilled, settings)}`, sub: 'Billed Deliveries', color: [15, 23, 42] },
-    { label: 'PAYMENTS CREDITED', value: `${curSym} ${formatAmountNumber(totalReceived, settings)}`, sub: `${payments.filter((p) => p.type === 'received').length} Payments`, color: [5, 150, 105] },
+    { label: hasDateRange ? 'DELIVERED (PERIOD)' : 'COAL DELIVERED', value: `${totalTons.toFixed(2)} t`, sub: `${dispatches.length} Trucks Cleared`, color: [15, 23, 42], topBar: [30, 58, 138] },
+    { label: hasDateRange ? 'BILLED (PERIOD)' : 'TOTAL INVOICED', value: `${curSym} ${formatAmountNumber(totalBilled, settings)}`, sub: 'Billed Deliveries', color: [15, 23, 42], topBar: [71, 85, 105] },
+    { label: hasDateRange ? 'CREDITED (PERIOD)' : 'PAYMENTS CREDITED', value: `${curSym} ${formatAmountNumber(totalReceived, settings)}`, sub: `${payments.filter((p) => p.type === 'received').length} Cleared Credits`, color: [5, 150, 105], topBar: [5, 150, 105] },
     {
-      label: 'NET BALANCE DUE',
+      label: hasDateRange ? 'CLOSING BALANCE DUE' : 'NET BALANCE DUE',
       value: `${curSym} ${formatAmountNumber(outstanding, settings)}`,
-      sub: outstanding > 0 ? 'Receivable' : 'Settled',
+      sub: outstanding > 0 ? 'Receivable Balance Due' : 'Account Settled in Full',
       color: outstanding > 0 ? [220, 38, 38] : [5, 150, 105],
+      topBar: outstanding > 0 ? [220, 38, 38] : [5, 150, 105],
     },
   ];
 
@@ -601,23 +704,28 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
     doc.setFillColor(248, 250, 252);
     doc.roundedRect(x, kpiY, kpiWidth, kpiHeight, 1.5, 1.5, 'FD');
 
+    // Colored top edge bar on KPI card
+    doc.setFillColor(kpi.topBar[0], kpi.topBar[1], kpi.topBar[2]);
+    doc.roundedRect(x, kpiY, kpiWidth, 1.2, 0.5, 0.5, 'F');
+
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(6.5);
     doc.setTextColor(100, 116, 139);
-    doc.text(kpi.label, x + 3, kpiY + 4.5);
+    doc.text(kpi.label, x + 3.5, kpiY + 5.2);
 
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9.5);
     doc.setTextColor(kpi.color[0], kpi.color[1], kpi.color[2]);
-    doc.text(kpi.value, x + 3, kpiY + 10);
+    doc.text(kpi.value, x + 3.5, kpiY + 10.5);
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(6.5);
     doc.setTextColor(100, 116, 139);
-    doc.text(kpi.sub, x + 3, kpiY + 14);
+    doc.text(kpi.sub, x + 3.5, kpiY + 14.5);
   });
 
   // 4. Combined Chronological Statement Ledger
+  // Multi-row per entry with alternating entry colors
   type StatementEntry =
     | { kind: 'dispatch'; date: string; data: Dispatch }
     | { kind: 'payment'; date: string; data: Payment };
@@ -627,8 +735,35 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
     ...payments.map((p) => ({ kind: 'payment' as const, date: p.date, data: p })),
   ].sort((a, b) => a.date.localeCompare(b.date));
 
-  let runningBal = 0;
+  let runningBal = openingBalance;
   const tableRows: any[] = [];
+
+  interface RowMeta {
+    entryIndex: number;
+    subRow: number;
+    totalSubRows: number;
+    isPayment: boolean;
+    isReceived: boolean;
+  }
+  const rowMetaMap: RowMeta[] = [];
+
+  if (openingBalance !== 0 || hasDateRange) {
+    const openDate = dateRange?.includes('–')
+      ? dateRange.split('–')[0].trim()
+      : (formatDisplayDate(options.startDate) || '-');
+
+    tableRows.push([
+      { content: '0', rowSpan: 1, styles: { valign: 'middle', halign: 'center', fontStyle: 'bold' } },
+      openDate,
+      'OPENING BALANCE BROUGHT FORWARD (B/F)',
+      '-',
+      '-',
+      openingBalance > 0 ? openingBalance.toLocaleString('en-PK') : '-',
+      openingBalance < 0 ? Math.abs(openingBalance).toLocaleString('en-PK') : '-',
+      runningBal.toLocaleString('en-PK'),
+    ]);
+    rowMetaMap.push({ entryIndex: -1, subRow: 0, totalSubRows: 1, isPayment: false, isReceived: false });
+  }
 
   entries.forEach((entry, idx) => {
     if (entry.kind === 'dispatch') {
@@ -640,17 +775,15 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
       runningBal += invoiced;
       const po = pos?.find((p) => p.id === d.poId);
       const transit = calculateTransitLoss(d);
+      const material = getMaterialForDispatch(d, settings);
 
       const sourcesStr =
         d.coalInputs && d.coalInputs.length > 0
           ? d.coalInputs
               .filter((c) => (c.weight || 0) > 0)
-              .map((c) => `${c.sourceName || 'Coal'}: ${c.weight}t`)
+              .map((c) => `${c.sourceName || material.name}: ${c.weight}t`)
               .join(', ')
           : '';
-
-      // 4-Line Detailed Specification for each dispatch
-      const lines: string[] = [];
 
       // Line 1: Primary logistics & commercial settlement rate
       const truckPart = d.truckNumber ? `Truck: ${d.truckNumber}` : 'Direct Delivery';
@@ -660,32 +793,35 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
           ? ` (Base: ${curSym} ${formatAmountNumber(d.baseRate, settings)})`
           : ''
       }`;
-      lines.push(`DELIVERY: ${truckPart}${destPart}${ratePart}`);
 
-      // Line 2: Lab Quality Analysis (GCV with delta, Sulphur, Moisture, Ash, VM)
+      // Line 2: Material-specific factory quality analysis
       const labParts: string[] = [];
-      if (d.labActualGcv) {
+      if (material.pricingModel !== 'gcv' && d.receivedQuality) {
+        labParts.push(`${material.qualityLabel || 'Quality'}: ${d.receivedQuality}${material.qualityUnit || ''}`);
+        if (material.pricingModel === 'purity') labParts.push(`Rate/point: ${curSym}${d.ratePerQualityUnit || 0}`);
+      } else if (d.labActualGcv) {
         const delta = d.targetGcv ? d.labActualGcv - d.targetGcv : null;
         const deltaStr = delta !== null ? ` (${delta >= 0 ? '+' : ''}${delta})` : '';
         labParts.push(`GCV: ${d.labActualGcv} kcal${deltaStr}`);
       } else if (d.targetGcv) {
         labParts.push(`Target GCV: ${d.targetGcv} kcal`);
       }
-      if (d.labSulphur) labParts.push(`S: ${d.labSulphur}%`);
-      if (d.labMoisture) labParts.push(`Moist: ${d.labMoisture}%`);
-      if (d.labAsh) labParts.push(`Ash: ${d.labAsh}%`);
-      if (d.labVm) labParts.push(`VM: ${d.labVm}%`);
-      lines.push(`LAB SPECS: ${labParts.length > 0 ? labParts.join('  •  ') : 'Standard Specifications Verified'}`);
+      if (material.pricingModel === 'gcv') {
+        if (d.labSulphur) labParts.push(`S: ${d.labSulphur}%`);
+        if (d.labMoisture) labParts.push(`Moist: ${d.labMoisture}%`);
+        if (d.labAsh) labParts.push(`Ash: ${d.labAsh}%`);
+        if (d.labVm) labParts.push(`VM: ${d.labVm}%`);
+      }
 
       // Line 3: Commercial & Rate Adjustments
       const adjParts: string[] = [];
       if (adj.premium) adjParts.push(`Bonus: +${curSym}${adj.premium.toFixed(2)}/t${adj.isProrata ? ' (Pro-Rata)' : ''}`);
-      if (adj.deduction) adjParts.push(`GCV Ded: -${curSym}${adj.deduction.toFixed(2)}/t${adj.isProrata ? ' (Pro-Rata)' : ''}`);
+      if (adj.deduction) adjParts.push(`${material.pricingModel === 'gcv' ? 'GCV' : 'Manual'} Ded: -${curSym}${adj.deduction.toFixed(2)}/t${adj.isProrata ? ' (Pro-Rata)' : ''}`);
+      if (s.dieselAdjustment) adjParts.push(`Diesel: ${s.dieselAdjustment > 0 ? '+' : '-'}${curSym}${Math.abs(s.dieselAdjustment).toFixed(2)}/t`);
       if (s.taxDeduction) adjParts.push(`Tax: -${curSym}${s.taxDeduction.toFixed(2)}/t`);
       if (d.commissionPerTon) adjParts.push(`Comm: -${curSym}${d.commissionPerTon}/t`);
-      lines.push(`RATE AUDIT: ${adjParts.length > 0 ? adjParts.join('  •  ') : 'Standard Settlement Rate'}`);
 
-      // Line 4: Sourcing, Transit Loss & Delivery Notes
+      // Transit Loss & Delivery Notes
       const logParts: string[] = [];
       if (transit.totalLoadedWeight > 0 && Math.abs(transit.diff) >= 0.01) {
         logParts.push(`Transit: ${transit.diff < 0 ? '-' : '+'}${Math.abs(transit.diff).toFixed(2)}t (${transit.lossPercentage.toFixed(1)}%)`);
@@ -696,18 +832,30 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
       if (d.notes) {
         logParts.push(`Note: ${d.notes}`);
       }
-      lines.push(`LOGISTICS: ${logParts.length > 0 ? logParts.join('  •  ') : 'Verified & Cleared'}`);
 
-      tableRows.push([
-        (idx + 1).toString(),
+      const row1 = [
+        { content: (idx + 1).toString(), rowSpan: 3, styles: { valign: 'middle', halign: 'center' } },
         formatDisplayDate(d.date) || '-',
-        lines.join('\n'),
+        `DELIVERY: ${truckPart}${destPart}${ratePart}`,
         po?.poNumber || '-',
         (d.labReceivedWeight || 0).toFixed(2),
         invoiced.toLocaleString('en-PK'),
         '-',
         runningBal.toLocaleString('en-PK'),
-      ]);
+      ];
+
+      const row2 = [
+        { content: `LAB ASSAY: ${labParts.length > 0 ? labParts.join('   •   ') : 'Standard Specifications Verified'}`, colSpan: 7 },
+      ];
+
+      const row3 = [
+        { content: `RATE AUDIT: ${adjParts.length > 0 ? adjParts.join('   •   ') : 'Standard Settlement Rate'}${logParts.length > 0 ? `   |   LOGISTICS: ${logParts.join('   •   ')}` : ''}`, colSpan: 7 },
+      ];
+
+      tableRows.push(row1, row2, row3);
+      rowMetaMap.push({ entryIndex: idx, subRow: 0, totalSubRows: 3, isPayment: false, isReceived: false });
+      rowMetaMap.push({ entryIndex: idx, subRow: 1, totalSubRows: 3, isPayment: false, isReceived: false });
+      rowMetaMap.push({ entryIndex: idx, subRow: 2, totalSubRows: 3, isPayment: false, isReceived: false });
     } else {
       const p = entry.data;
       const isReceived = p.type === 'received';
@@ -718,22 +866,24 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
         runningBal += amount;
       }
 
-      const pLines: string[] = [
-        `PAYMENT ${isReceived ? 'CREDIT / RECEIVED' : 'DEBIT / OUTFLOW'} (${p.mode.toUpperCase()})`,
-        `Voucher / Ref: ${p.referenceNote || 'Direct Settlement'}`,
-        `Txn ID: #${(p.id || '').slice(0, 10).toUpperCase()}`
-      ];
-
-      tableRows.push([
-        (idx + 1).toString(),
+      const pRow1 = [
+        { content: (idx + 1).toString(), rowSpan: 2, styles: { valign: 'middle', halign: 'center' } },
         formatDisplayDate(p.date) || '-',
-        pLines.join('\n'),
+        `PAYMENT ${isReceived ? 'CREDIT / RECEIVED' : 'DEBIT / OUTFLOW'} (${p.mode.toUpperCase()})`,
         (p.id || '').slice(0, 8).toUpperCase(),
         '-',
         !isReceived ? amount.toLocaleString('en-PK') : '-',
         isReceived ? amount.toLocaleString('en-PK') : '-',
         runningBal.toLocaleString('en-PK'),
-      ]);
+      ];
+
+      const pRow2 = [
+        { content: `SETTLEMENT PARTICULARS: Voucher / Reference: ${p.referenceNote || 'Direct Settlement'}   •   System Txn ID: #${(p.id || '').slice(0, 10).toUpperCase()}   •   Posted to Party Ledger`, colSpan: 7 },
+      ];
+
+      tableRows.push(pRow1, pRow2);
+      rowMetaMap.push({ entryIndex: idx, subRow: 0, totalSubRows: 2, isPayment: true, isReceived });
+      rowMetaMap.push({ entryIndex: idx, subRow: 1, totalSubRows: 2, isPayment: true, isReceived });
     }
   });
 
@@ -752,7 +902,7 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
   ];
 
   autoTable(doc, {
-    startY: kpiY + kpiHeight + 6,
+    startY: kpiY + kpiHeight + 5,
     margin: { left: margin, right: margin, bottom: 20 },
     head: [
       [
@@ -769,24 +919,25 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
     body: tableRows,
     foot: tableFooter,
     theme: 'grid',
+    rowPageBreak: 'avoid',
     headStyles: {
-      fillColor: [15, 23, 42],
+      fillColor: [11, 18, 32], // Deep Obsidian
       textColor: [255, 255, 255],
       fontStyle: 'bold',
       fontSize: 8,
-      cellPadding: 3,
+      cellPadding: 2.8,
     },
     footStyles: {
-      fillColor: [15, 23, 42],
+      fillColor: [11, 18, 32],
       textColor: [255, 255, 255],
       fontStyle: 'bold',
       fontSize: 8.5,
-      cellPadding: 3.5,
+      cellPadding: 3.2,
     },
     bodyStyles: {
       fontSize: 7.2,
       textColor: [51, 65, 85],
-      cellPadding: { top: 3.2, bottom: 3.2, left: 2.5, right: 2.5 },
+      cellPadding: 2,
     },
     columnStyles: {
       0: { cellWidth: 8, halign: 'center', valign: 'middle' },
@@ -800,48 +951,78 @@ async function exportPartyStatementPdf(options: ExportDispatchesPdfOptions & { s
     },
     didParseCell: (data) => {
       if (data.section === 'body') {
-        const rowIndex = data.row.index;
-        const isEven = rowIndex % 2 === 0;
-        const rawArr = Array.isArray(data.row.raw) ? (data.row.raw as any[]) : null;
-        const descText = rawArr ? String(rawArr[2] || '') : '';
-        const isPayment = descText.includes('PAYMENT CREDIT') || descText.includes('PAYMENT DEBIT');
+        const meta = rowMetaMap[data.row.index];
+        if (!meta) return;
 
-        if (isPayment) {
-          const isReceived = descText.includes('PAYMENT CREDIT');
-          data.cell.styles.fillColor = isReceived ? [240, 253, 244] : [255, 241, 242]; // emerald-50 or rose-50
-          if (data.column.index === 6 && isReceived) {
-            data.cell.styles.textColor = [5, 150, 105]; // emerald-600
-            data.cell.styles.fontStyle = 'bold';
-          } else if (data.column.index === 5 && !isReceived) {
-            data.cell.styles.textColor = [220, 38, 38]; // rose-600
-            data.cell.styles.fontStyle = 'bold';
-          }
-        } else {
-          // Alternating colors for dispatches
-          // Even entry: Pure Crisp White [255, 255, 255]
-          // Odd entry: Soft Cool Slate-100 Tint [241, 245, 249]
-          data.cell.styles.fillColor = isEven ? [255, 255, 255] : [241, 245, 249];
+        if (meta.entryIndex === -1) {
+          data.cell.styles.fillColor = [241, 245, 249];
+          data.cell.styles.fontStyle = 'bold';
+          data.cell.styles.textColor = [15, 23, 42];
+          data.cell.styles.fontSize = 7.5;
+          return;
         }
 
-        // Prominent border between entries so where each entry starts and ends is immediately clear
-        data.cell.styles.lineWidth = { top: 0, right: 0.15, bottom: 0.75, left: 0.15 };
-        data.cell.styles.lineColor = [203, 213, 225]; // slate-300
+        const isEven = meta.entryIndex % 2 === 0;
 
-        // Column typography
-        if (data.column.index === 0) {
-          data.cell.styles.fontStyle = 'bold';
+        if (meta.isPayment) {
+          const bg1: [number, number, number] = meta.isReceived ? [240, 253, 244] : [255, 241, 242];
+          const bg2: [number, number, number] = meta.isReceived ? [232, 250, 238] : [254, 230, 232];
+          data.cell.styles.fillColor = meta.subRow === 0 ? bg1 : bg2;
+
+          if (meta.subRow === 0) {
+            if (data.column.index === 6 && meta.isReceived) {
+              data.cell.styles.textColor = [5, 150, 105];
+              data.cell.styles.fontStyle = 'bold';
+            } else if (data.column.index === 5 && !meta.isReceived) {
+              data.cell.styles.textColor = [220, 38, 38];
+              data.cell.styles.fontStyle = 'bold';
+            }
+          }
+        } else {
+          // Alternating colors for dispatches across all sub-rows
+          const line1Bg: [number, number, number] = isEven ? [255, 255, 255] : [241, 245, 249];
+          const line2Bg: [number, number, number] = isEven ? [250, 252, 255] : [236, 241, 246];
+          const line3Bg: [number, number, number] = isEven ? [246, 249, 254] : [232, 237, 243];
+          data.cell.styles.fillColor = meta.subRow === 0 ? line1Bg : meta.subRow === 1 ? line2Bg : line3Bg;
+        }
+
+        if (meta.subRow === 0) {
+          data.cell.styles.fontSize = 7.5;
+          data.cell.styles.cellPadding = { top: 2.2, bottom: 1.5, left: 2.5, right: 2.5 };
+          data.cell.styles.lineWidth = { top: 0, right: 0.15, bottom: 0.15, left: 0.15 };
+          data.cell.styles.lineColor = [226, 232, 240];
+
+          if (data.column.index === 1 || data.column.index === 7) {
+            data.cell.styles.fontStyle = 'bold';
+            data.cell.styles.textColor = [15, 23, 42];
+          }
+          if (data.column.index === 4) {
+            data.cell.styles.fontStyle = 'bold';
+            data.cell.styles.textColor = [15, 23, 42];
+          }
+        } else if (meta.subRow === 1 && meta.totalSubRows === 3) {
+          data.cell.styles.fontSize = 6.8;
+          data.cell.styles.textColor = [51, 65, 85];
+          data.cell.styles.cellPadding = { top: 1.2, bottom: 1.2, left: 3, right: 3 };
+          data.cell.styles.lineWidth = { top: 0, right: 0.15, bottom: 0.15, left: 0.15 };
+          data.cell.styles.lineColor = [226, 232, 240];
+        } else {
+          // Last row of this entry: strong bottom dividing border!
+          data.cell.styles.fontSize = 6.8;
           data.cell.styles.textColor = [71, 85, 105];
-        } else if (data.column.index === 1) {
+          data.cell.styles.cellPadding = { top: 1.2, bottom: 2.2, left: 3, right: 3 };
+          data.cell.styles.lineWidth = { top: 0, right: 0.15, bottom: 0.75, left: 0.15 };
+          data.cell.styles.lineColor = [148, 163, 184]; // Distinct division between entries
+        }
+
+        if (data.column.index === 0) {
+          data.cell.styles.valign = 'middle';
+          data.cell.styles.halign = 'center';
           data.cell.styles.fontStyle = 'bold';
-          data.cell.styles.textColor = [15, 23, 42];
-        } else if (data.column.index === 2) {
-          data.cell.styles.textColor = [30, 41, 59];
-        } else if (data.column.index === 4) {
-          data.cell.styles.fontStyle = 'bold';
-          data.cell.styles.textColor = [15, 23, 42];
-        } else if (data.column.index === 7) {
-          data.cell.styles.fontStyle = 'bold';
-          data.cell.styles.textColor = [15, 23, 42];
+          data.cell.styles.textColor = [100, 116, 139];
+          data.cell.styles.lineWidth = { top: 0, right: 0.2, bottom: 0.75, left: 0.15 };
+          data.cell.styles.lineColor = [148, 163, 184];
+          data.cell.styles.fillColor = isEven ? [255, 255, 255] : [241, 245, 249];
         }
       }
     },
@@ -973,12 +1154,18 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
   const pageHeight = doc.internal.pageSize.getHeight();
   const margin = 14;
 
+  // 1. Executive Top Accent Banner
+  doc.setFillColor(11, 18, 32); // Deep Midnight Obsidian
+  doc.rect(0, 0, pageWidth, 4.5, 'F');
+  doc.setFillColor(197, 160, 89); // Antique Gold Micro-Rule
+  doc.rect(0, 4.5, pageWidth, 0.8, 'F');
+
   // Header: Business Information
   let headerTextX = margin;
   if (settings.logoUrl && settings.logoUrl.startsWith('data:image')) {
     try {
       const isPng = settings.logoUrl.includes('image/png');
-      doc.addImage(settings.logoUrl, isPng ? 'PNG' : 'JPEG', margin, 9, 14, 14);
+      doc.addImage(settings.logoUrl, isPng ? 'PNG' : 'JPEG', margin, 8.5, 14, 14);
       headerTextX = margin + 17;
     } catch {
       // ignore if image format unsupported
@@ -986,34 +1173,34 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
   }
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(16);
-  doc.setTextColor(15, 23, 42); // slate-900
-  doc.text((settings.businessName || 'AWAN COAL LOGISTICS').toUpperCase(), headerTextX, 16);
+  doc.setFontSize(15);
+  doc.setTextColor(11, 18, 32);
+  doc.text((settings.businessName || 'AWAN COAL LOGISTICS').toUpperCase(), headerTextX, 15);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
-  doc.setTextColor(100, 116, 139); // slate-500
+  doc.setFontSize(8);
+  doc.setTextColor(100, 116, 139);
   const subline = [
     settings.phoneNumber ? `Tel: ${settings.phoneNumber}` : '',
     settings.ntnNumber ? `NTN: ${settings.ntnNumber}` : '',
     settings.companyAddress ? settings.companyAddress : '',
   ]
     .filter(Boolean)
-    .join('  •  ');
+    .join('   •   ');
   if (subline) {
-    doc.text(subline, headerTextX, 21);
+    doc.text(subline, headerTextX, 20);
   }
 
   // Report Title & Meta
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(12);
-  doc.setTextColor(15, 23, 42);
-  doc.text(title, margin, 30);
+  doc.setFontSize(11);
+  doc.setTextColor(11, 18, 32);
+  doc.text(title, margin, 28);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
+  doc.setFontSize(8);
   doc.setTextColor(71, 85, 105);
-  // Summary Metrics Banner using unified calculateLedgerTotals (Issue 20)
+
   const ledgerTotals = calculateLedgerTotals(dispatches, settings);
   const totalTons = ledgerTotals.receivedTons;
   const totalRevenue = ledgerTotals.revenue;
@@ -1024,43 +1211,48 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
     partyName ? `Party: ${partyName}` : null,
     dateRange ? `Period: ${dateRange}` : null,
     subtitle ? subtitle : null,
-    `Generated: ${formatDisplayDate(new Date())}`,
+    `Audit Generated: ${formatDisplayDate(new Date())}`,
     `Total Dispatches: ${dispatches.length}${ledgerTotals.pendingCount > 0 ? ` (${ledgerTotals.settledCount} Settled, ${ledgerTotals.pendingCount} In-Transit)` : ''}`,
   ].filter(Boolean);
-  doc.text(metaParts.join('   •   '), margin, 35);
+  doc.text(metaParts.join('   •   '), margin, 33);
 
-  const bannerY = 40;
-  const bannerHeight = 14;
+  const bannerY = 37.5;
+  const bannerHeight = 15;
   const bannerWidth = pageWidth - margin * 2;
 
   // Light gray background box
   doc.setFillColor(248, 250, 252);
   doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.3);
   doc.roundedRect(margin, bannerY, bannerWidth, bannerHeight, 2, 2, 'FD');
 
   const curSym = getCurrencySymbol(settings.currency);
   const colWidth = bannerWidth / 4;
   const kpiItems = [
-    { label: 'TOTAL DELIVERED', value: `${totalTons.toFixed(2)} Tons` },
-    { label: 'TOTAL REVENUE', value: `${curSym} ${formatAmountNumber(totalRevenue, settings)}` },
-    { label: 'TOTAL COST', value: `${curSym} ${formatAmountNumber(totalCost, settings)}` },
-    { label: 'NET PROFIT', value: `${curSym} ${formatAmountNumber(totalProfit, settings)}` },
+    { label: 'TOTAL DELIVERED', value: `${totalTons.toFixed(2)} Tons`, color: [15, 23, 42], topBar: [30, 58, 138] },
+    { label: 'TOTAL REVENUE', value: `${curSym} ${formatAmountNumber(totalRevenue, settings)}`, color: [15, 23, 42], topBar: [71, 85, 105] },
+    { label: 'TOTAL COST', value: `${curSym} ${formatAmountNumber(totalCost, settings)}`, color: [15, 23, 42], topBar: [180, 83, 9] },
+    { label: 'NET TRADING PROFIT', value: `${curSym} ${formatAmountNumber(totalProfit, settings)}`, color: [5, 150, 105], topBar: [5, 150, 105] },
   ];
 
   kpiItems.forEach((kpi, idx) => {
-    const x = margin + idx * colWidth + 6;
+    const x = margin + idx * colWidth;
+    // Top colored bar for each segment
+    doc.setFillColor(kpi.topBar[0], kpi.topBar[1], kpi.topBar[2]);
+    doc.rect(x + 1, bannerY, colWidth - 2, 1, 'F');
+
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
+    doc.setFontSize(7);
     doc.setTextColor(100, 116, 139);
-    doc.text(kpi.label, x, bannerY + 5);
+    doc.text(kpi.label, x + 6, bannerY + 5.2);
 
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10.5);
-    doc.setTextColor(15, 23, 42);
-    doc.text(kpi.value, x, bannerY + 10.5);
+    doc.setFontSize(10);
+    doc.setTextColor(kpi.color[0], kpi.color[1], kpi.color[2]);
+    doc.text(kpi.value, x + 6, bannerY + 11);
   });
 
-  // Table Data - 2 lines per dispatch entry with alternating colors
+  // Table Data - 3 lines per dispatch entry with alternating colors
   const sortedDispatches = [...dispatches].sort((a, b) => b.date.localeCompare(a.date));
 
   const tableRows: any[] = [];
@@ -1086,7 +1278,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
 
     // Line 1: Primary logistics & commercial settlement numbers
     const row1 = [
-      { content: (index + 1).toString(), rowSpan: 3 },
+      { content: (index + 1).toString(), rowSpan: 3, styles: { valign: 'middle', halign: 'center' } },
       formatDisplayDate(d.date) || '-',
       d.truckNumber || '-',
       party?.name || d.factoryName || '-',
@@ -1114,17 +1306,18 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
             : null),
     ].filter(Boolean);
 
-    const labText = `LAB QUALITY & ANALYSIS: ${labSpecsList.join('  •  ')}`;
+    const labText = `LAB QUALITY & ANALYSIS: ${labSpecsList.join('   •   ')}`;
 
     // Line 3: Commercial adjustments, pricing audit & sourcing
     const adjList = [
       adj.deduction ? `GCV Ded: -${curSym}${adj.deduction.toFixed(2)}/t${adj.isProrata ? ' (Pro-Rata)' : ''}` : null,
       adj.premium ? `Bonus: +${curSym}${adj.premium.toFixed(2)}/t${adj.isProrata ? ' (Pro-Rata)' : ''}` : null,
+      s.dieselAdjustment ? `Diesel: ${s.dieselAdjustment > 0 ? '+' : '-'}${curSym}${Math.abs(s.dieselAdjustment).toFixed(2)}/t` : null,
       s.taxDeduction ? `Tax: -${curSym}${s.taxDeduction.toFixed(2)}/t` : null,
       d.commissionPerTon ? `Comm: -${curSym}${d.commissionPerTon}/t` : null,
     ].filter(Boolean);
 
-    const adjText = adjList.length > 0 ? `RATE AUDIT: ${adjList.join('  •  ')}` : 'RATE AUDIT: Standard Settlement';
+    const adjText = adjList.length > 0 ? `RATE AUDIT: ${adjList.join('   •   ')}` : 'RATE AUDIT: Standard Settlement';
 
     const notesSnippet = d.notes ? `Note: ${d.notes}` : '';
     const sourcingText = [
@@ -1133,7 +1326,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
       notesSnippet,
     ]
       .filter(Boolean)
-      .join('  •  ');
+      .join('   •   ');
 
     const row2 = [
       { content: labText, colSpan: 10 },
@@ -1186,7 +1379,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
     theme: 'grid',
     rowPageBreak: 'avoid',
     headStyles: {
-      fillColor: [15, 23, 42],
+      fillColor: [11, 18, 32],
       textColor: [255, 255, 255],
       fontStyle: 'bold',
       fontSize: 8,
@@ -1194,7 +1387,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
       cellPadding: 2.5,
     },
     footStyles: {
-      fillColor: [15, 23, 42],
+      fillColor: [11, 18, 32],
       textColor: [255, 255, 255],
       fontStyle: 'bold',
       fontSize: 8.5,
@@ -1221,7 +1414,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
         if (subRow === 0) {
           data.cell.styles.fontSize = 8;
           data.cell.styles.cellPadding = { top: 2.2, bottom: 1.5, left: 2.5, right: 2.5 };
-          data.cell.styles.lineWidth = { top: 0, right: 0, bottom: 0.15, left: 0 };
+          data.cell.styles.lineWidth = { top: 0, right: 0.15, bottom: 0.15, left: 0.15 };
           data.cell.styles.lineColor = isEvenEntry ? [241, 245, 249] : [226, 232, 240];
 
           if (data.column.index === 2) {
@@ -1244,7 +1437,7 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
           data.cell.styles.textColor = [51, 65, 85];
           data.cell.styles.fontStyle = 'normal';
           data.cell.styles.cellPadding = { top: 1.2, bottom: 1.2, left: 3, right: 3 };
-          data.cell.styles.lineWidth = { top: 0, right: 0, bottom: 0.15, left: 0 };
+          data.cell.styles.lineWidth = { top: 0, right: 0.15, bottom: 0.15, left: 0.15 };
           data.cell.styles.lineColor = [226, 232, 240];
         } else {
           data.cell.styles.fontSize = 7;
@@ -1252,12 +1445,12 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
           data.cell.styles.fontStyle = 'normal';
           data.cell.styles.cellPadding = { top: 1.2, bottom: 2.2, left: 3, right: 3 };
           // Bold bottom dividing border on the last line of the entry!
-          data.cell.styles.lineWidth = { top: 0, right: 0, bottom: 0.8, left: 0 };
+          data.cell.styles.lineWidth = { top: 0, right: 0.15, bottom: 0.8, left: 0.15 };
           data.cell.styles.lineColor = [148, 163, 184];
         }
 
         if (data.column.index === 0) {
-          data.cell.styles.lineWidth = { top: 0, right: 0.2, bottom: 0.8, left: 0 };
+          data.cell.styles.lineWidth = { top: 0, right: 0.2, bottom: 0.8, left: 0.15 };
           data.cell.styles.lineColor = [148, 163, 184];
           data.cell.styles.valign = 'middle';
           data.cell.styles.halign = 'center';
@@ -1380,6 +1573,10 @@ export interface ExportDispatchesExcelOptions {
   partyName?: string;
   party?: Party;
   payments?: Payment[];
+  dateRange?: string;
+  startDate?: string;
+  endDate?: string;
+  openingBalance?: number;
   dispatches: Dispatch[];
   parties: Party[];
   pos: PurchaseOrder[];
@@ -1610,11 +1807,13 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
     // ════════════════════════════════════════════════════════════════════════
     // SHEET 1: OFFICIAL STATEMENT OF ACCOUNT (Chronological Running Balance)
     // ════════════════════════════════════════════════════════════════════════
+    const openingBalance = options.openingBalance || 0;
+    const hasDateRange = Boolean(options.dateRange && options.dateRange !== 'All Time');
     const balanceResult = calculatePartyBalance(dispatches, payments);
     const totalTons = balanceResult.totalTons;
     const totalBilled = balanceResult.totalBilled;
     const totalReceived = balanceResult.totalPaymentsReceived;
-    const netBalance = balanceResult.outstandingBalance;
+    const netBalance = openingBalance + totalBilled - totalReceived;
 
     const wsStatement = wb.addWorksheet('Statement of Account', {
       views: [{ state: 'frozen', ySplit: 12, showGridLines: true }],
@@ -1668,13 +1867,13 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
 
     wsStatement.mergeCells('F5:J5');
     const rh5 = wsStatement.getCell('F5');
-    rh5.value = `As of ${formatDisplayDate(new Date())}`;
+    rh5.value = hasDateRange ? `Period: ${options.dateRange}` : `As of ${formatDisplayDate(new Date())}`;
     rh5.font = { name: 'Calibri', size: 12, bold: true, color: { argb: XL_PALETTE.TEXT_BLUE } };
     rh5.alignment = { vertical: 'middle', horizontal: 'right' };
 
     wsStatement.mergeCells('F6:J6');
     const rh6 = wsStatement.getCell('F6');
-    rh6.value = `Currency: ${settings.currency || 'PKR (Rs.)'}   •   Status: ${netBalance > 0 ? 'Payment Due' : 'Settled'}`;
+    rh6.value = `Issue Date: ${formatDisplayDate(new Date())}   •   Currency: ${settings.currency || 'PKR (Rs.)'}   •   Status: ${netBalance > 0 ? 'Payment Due' : 'Settled'}`;
     rh6.font = { name: 'Calibri', size: 9, color: { argb: XL_PALETTE.TEXT_SECONDARY } };
     rh6.alignment = { vertical: 'middle', horizontal: 'right' };
 
@@ -1699,7 +1898,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
     addKpiRowCards(wsStatement, 8, [
       {
         colSpan: ['A', 'B'],
-        label: 'Delivered Tonnage',
+        label: hasDateRange ? 'Delivered (Period)' : 'Delivered Tonnage',
         value: totalTons,
         sub: `${dispatches.length} Trucks Completed`,
         numFmt: '#,##0.00" t"',
@@ -1709,7 +1908,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       },
       {
         colSpan: ['C', 'E'],
-        label: 'Total Invoiced (Debit)',
+        label: hasDateRange ? 'Billed in Period' : 'Total Invoiced (Debit)',
         value: Math.round(totalBilled),
         sub: 'Gross Deliveries Billed',
         numFmt: xlCurFmt,
@@ -1719,7 +1918,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       },
       {
         colSpan: ['F', 'G'],
-        label: 'Payments Credited',
+        label: hasDateRange ? 'Credited in Period' : 'Payments Credited',
         value: Math.round(totalReceived),
         sub: `${payments.filter((p) => p.type === 'received').length} Receipts Cleared`,
         numFmt: xlCurFmt,
@@ -1729,7 +1928,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       },
       {
         colSpan: ['H', 'J'],
-        label: 'Net Balance Due',
+        label: hasDateRange ? 'Closing Balance Due' : 'Net Balance Due',
         value: Math.round(netBalance),
         sub: netBalance > 0 ? 'Receivable from Party' : 'Account Fully Settled',
         numFmt: xlCurFmt,
@@ -1777,8 +1976,38 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       ...payments.map((p) => ({ kind: 'payment' as const, date: p.date, data: p })),
     ].sort((a, b) => a.date.localeCompare(b.date));
 
-    let runBal = 0;
+    let runBal = openingBalance;
     let currentRowIdx = 13;
+
+    if (openingBalance !== 0 || hasDateRange) {
+      const row = wsStatement.getRow(currentRowIdx);
+      row.height = 22;
+      row.getCell(1).value = 0;
+      row.getCell(2).value = options.dateRange?.includes('–') ? options.dateRange.split('–')[0].trim() : '-';
+      row.getCell(3).value = 'OPENING BALANCE BROUGHT FORWARD (B/F)';
+      row.getCell(4).value = '-';
+      row.getCell(5).value = '-';
+      row.getCell(6).value = '-';
+      row.getCell(7).value = openingBalance > 0 ? openingBalance : '-';
+      if (openingBalance > 0) row.getCell(7).numFmt = xlCurFmt;
+      row.getCell(8).value = openingBalance < 0 ? Math.abs(openingBalance) : '-';
+      if (openingBalance < 0) row.getCell(8).numFmt = xlCurFmt;
+      row.getCell(9).value = runBal;
+      row.getCell(9).numFmt = xlCurFmt;
+      row.getCell(10).value = 'Prior period accumulated balance';
+
+      for (let c = 1; c <= 10; c++) {
+        const cell = row.getCell(c);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.KPI_SLATE_FILL } };
+        cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+        cell.border = BORDER_CELL_LIGHT;
+        cell.alignment = {
+          vertical: 'middle',
+          horizontal: c === 1 || c === 2 || c === 4 ? 'center' : c >= 5 && c <= 9 ? 'right' : 'left',
+        };
+      }
+      currentRowIdx++;
+    }
 
     statementEntries.forEach((entry, idx) => {
       const row = wsStatement.getRow(currentRowIdx);

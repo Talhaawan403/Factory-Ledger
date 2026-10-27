@@ -1,5 +1,5 @@
 import React from 'react';
-import { Building2, Factory, Warehouse, Briefcase } from 'lucide-react';
+import { Building2, Factory, Warehouse, Briefcase, Pickaxe } from 'lucide-react';
 
 /**
  * Authentic Apple iOS Solid System Tones
@@ -28,6 +28,12 @@ function getPartyGlyphData(name: string) {
   }
   const colorIndex = Math.abs(hash) % APPLE_BUSINESS_PALETTE.length;
   const bg = APPLE_BUSINESS_PALETTE[colorIndex];
+
+  // Direct Mine / Mine Owner
+  const isDirectMine =
+    lower.includes('direct ledger') ||
+    lower.includes('mine owner') ||
+    lower.includes('direct mine');
 
   // Specific industrial, cement & manufacturing keywords
   const isIndustrial =
@@ -77,7 +83,10 @@ function getPartyGlyphData(name: string) {
     lower.includes('energy');
 
   let Icon = Building2;
-  if (isIndustrial) {
+  if (isDirectMine) {
+    Icon = Pickaxe;
+    return { Icon, bg: '#007AFF' };
+  } else if (isIndustrial) {
     Icon = Factory;
   } else if (isLogistics) {
     Icon = Warehouse;

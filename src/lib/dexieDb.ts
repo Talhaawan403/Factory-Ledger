@@ -61,7 +61,57 @@ export class FactoryLedgerDB extends Dexie {
     this.version(5).stores({
       conflicts: 'id, collection, entityId, timestamp, winner, conflictType',
     });
+
+    // Auto-Sanitizer Hook: Block NaN, Infinity, and non-numeric corruption across all entity tables
+    const entityTables: Table<any, any>[] = [
+      this.parties,
+      this.dispatches,
+      this.payments,
+      this.expenses,
+      this.pos,
+      this.mines,
+      this.lots,
+    ];
+
+    entityTables.forEach((table) => {
+      table.hook('creating', (_primKey, obj) => {
+        const sanitized = deepSanitizeNumbers(obj);
+        Object.assign(obj, sanitized);
+      });
+      table.hook('updating', (modifications) => {
+        return deepSanitizeNumbers(modifications);
+      });
+    });
   }
+}
+
+/**
+ * Recursively scans and sanitizes all numbers in an object:
+ * Replaces NaN, Infinity, -Infinity, and numeric-looking strings ('NaN', 'Infinity')
+ * with 0, ensuring corrupt numbers can NEVER enter IndexedDB.
+ */
+export function deepSanitizeNumbers<T>(val: T): T {
+  if (typeof val === 'number') {
+    return (isNaN(val) || !isFinite(val) ? 0 : val) as unknown as T;
+  }
+  if (typeof val === 'string') {
+    const lower = val.trim().toLowerCase();
+    if (lower === 'nan' || lower === 'infinity' || lower === '-infinity') {
+      return 0 as unknown as T;
+    }
+    return val;
+  }
+  if (!val || typeof val !== 'object') {
+    return val;
+  }
+  if (Array.isArray(val)) {
+    return val.map((item) => deepSanitizeNumbers(item)) as unknown as T;
+  }
+  const result: Record<string, any> = {};
+  for (const k of Object.keys(val)) {
+    result[k] = deepSanitizeNumbers((val as Record<string, any>)[k]);
+  }
+  return result as T;
 }
 
 export const idb = new FactoryLedgerDB();

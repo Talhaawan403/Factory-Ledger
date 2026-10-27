@@ -9,6 +9,7 @@ import { shareReceiptImage } from '../utils/exportSharing';
 import { formatDisplayDate } from '../utils/dateUtils';
 import { Capacitor } from '@capacitor/core';
 import { Share } from '@capacitor/share';
+import { getMaterialForDispatch } from '../utils/materials';
 import {
   Loader2,
   Share2,
@@ -96,6 +97,11 @@ export default function DispatchPreviewModal({
     const curSym = getCurrencySymbol(settings?.currency);
     const settlement = calculateSettlement(dispatch, settings);
     const adj = getEffectiveAdjustments(dispatch, settings);
+    const material = getMaterialForDispatch(dispatch, settings);
+    const isCoal = material.pricingModel === 'gcv';
+    const baseRate = material.pricingModel === 'purity'
+      ? (dispatch.ratePerQualityUnit || 0) * (dispatch.receivedQuality || 0)
+      : dispatch.baseRate;
 
     const text = `*${(settings?.businessName || 'AWAN COAL LOGISTICS').toUpperCase()}*
 *OFFICIAL SETTLEMENT SLIP*
@@ -105,14 +111,16 @@ export default function DispatchPreviewModal({
 *Party:* ${targetParty?.name || dispatch.factoryName || 'Factory Client'}
 ${poObj ? `*PO Number:* ${poObj.poNumber}\n` : ''}*Received Weight:* ${dispatch.labReceivedWeight || 0} Tons
 
-*LAB ANALYSIS:*
-• Target GCV: ${dispatch.targetGcv || 'N/A'} kcal/kg
+*MATERIAL & QUALITY:*
+• Material: ${material.name}
+${isCoal ? `• Target GCV: ${dispatch.targetGcv || 'N/A'} kcal/kg
 • Actual GCV: ${dispatch.labActualGcv || 'N/A'} kcal/kg
-• Ash / Moisture / Sulphur: ${dispatch.labAsh || 0}% / ${dispatch.labMoisture || 0}% / ${dispatch.labSulphur || 0}%
+• Ash / Moisture / Sulphur: ${dispatch.labAsh || 0}% / ${dispatch.labMoisture || 0}% / ${dispatch.labSulphur || 0}%` : `• Factory ${material.qualityLabel || 'Quality'}: ${dispatch.receivedQuality || 'N/A'} ${material.qualityUnit || ''}
+${material.pricingModel === 'purity' ? `• Rate per ${material.qualityLabel || 'purity'} point: ${curSym} ${dispatch.ratePerQualityUnit || 0}` : ''}`}
 
 *RATE & SETTLEMENT CALCULATION:*
-• Base Agreement Rate: ${curSym} ${dispatch.baseRate.toFixed(2)}/ton
-${adj.deduction > 0 ? `• GCV Deduction${adj.isProrata ? ` (${adj.ruleLabel})` : ''}: - ${curSym} ${adj.deduction.toFixed(2)}/ton\n` : ''}${adj.premium > 0 ? `• Premium${adj.isProrata ? ` (${adj.ruleLabel})` : ''}: + ${curSym} ${adj.premium.toFixed(2)}/ton\n` : ''}• Adjusted Rate: ${curSym} ${settlement.adjustedRate.toFixed(2)}/ton
+• Base Agreement Rate: ${curSym} ${baseRate.toFixed(2)}/ton
+${adj.deduction > 0 ? `• ${isCoal ? 'GCV' : 'Manual'} Deduction${adj.isProrata ? ` (${adj.ruleLabel})` : ''}: - ${curSym} ${adj.deduction.toFixed(2)}/ton\n` : ''}${adj.premium > 0 ? `• Premium${adj.isProrata ? ` (${adj.ruleLabel})` : ''}: + ${curSym} ${adj.premium.toFixed(2)}/ton\n` : ''}• Adjusted Rate: ${curSym} ${settlement.adjustedRate.toFixed(2)}/ton
 • Tax Deduction${dispatch.taxMethod === 'formula_18_5' ? ` ((Rate + ${dispatch.taxSalesPercent ?? 18}%) × ${dispatch.taxIncomePercent ?? 5}%)` : ''}: - ${curSym} ${settlement.taxDeduction.toFixed(2)}/ton
 ${dispatch.commissionPerTon ? `• Commission: - ${curSym} ${dispatch.commissionPerTon.toFixed(2)}/ton\n` : ''}----------------------------------------
 *PAYABLE RATE:* ${curSym} ${settlement.payableRate.toFixed(2)} / ton
@@ -151,6 +159,11 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}E-Verified Dispatch V
   }, [dispatch, targetParty, poObj, settings]);
 
   if (!dispatch) return null;
+  const material = getMaterialForDispatch(dispatch, settings);
+  const isCoal = material.pricingModel === 'gcv';
+  const displayedBaseRate = material.pricingModel === 'purity'
+    ? (dispatch.ratePerQualityUnit || 0) * (dispatch.receivedQuality || 0)
+    : dispatch.baseRate;
 
   return (
     <>
@@ -220,7 +233,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}E-Verified Dispatch V
           </div>
 
           <div className="ios-group">
-            <div className="ios-group-title">Contract & Lab Results</div>
+            <div className="ios-group-title">Contract & Factory Results</div>
             <div className="ios-card-grouped" style={{ padding: '12px 16px' }}>
               {shouldDisplayParty && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
@@ -239,17 +252,28 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}E-Verified Dispatch V
                 </div>
               )}
               <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
-                <span style={{ color: 'var(--label-secondary)' }}>Target GCV</span>
-                <span className="tabular-nums" style={{ fontWeight: 500 }}>{dispatch.targetGcv || 'N/A'} kcal/kg</span>
+                <span style={{ color: 'var(--label-secondary)' }}>Material</span>
+                <span style={{ fontWeight: 600 }}>{material.name}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
-                <span style={{ color: 'var(--label-secondary)' }}>Actual GCV</span>
-                <span className="tabular-nums" style={{ fontWeight: 500 }}>{dispatch.labActualGcv || 'N/A'} kcal/kg</span>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
-                <span style={{ color: 'var(--label-secondary)' }}>Ash / Moisture / Sulphur</span>
-                <span className="tabular-nums" style={{ fontWeight: 500 }}>{dispatch.labAsh || 0}% / {dispatch.labMoisture || 0}% / {dispatch.labSulphur || 0}%</span>
-              </div>
+              {isCoal ? <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
+                  <span style={{ color: 'var(--label-secondary)' }}>Target GCV</span>
+                  <span className="tabular-nums" style={{ fontWeight: 500 }}>{dispatch.targetGcv || 'N/A'} kcal/kg</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
+                  <span style={{ color: 'var(--label-secondary)' }}>Actual GCV</span>
+                  <span className="tabular-nums" style={{ fontWeight: 500 }}>{dispatch.labActualGcv || 'N/A'} kcal/kg</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
+                  <span style={{ color: 'var(--label-secondary)' }}>Ash / Moisture / Sulphur</span>
+                  <span className="tabular-nums" style={{ fontWeight: 500 }}>{dispatch.labAsh || 0}% / {dispatch.labMoisture || 0}% / {dispatch.labSulphur || 0}%</span>
+                </div>
+              </> : (
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, fontSize: 15 }}>
+                  <span style={{ color: 'var(--label-secondary)' }}>Factory {material.qualityLabel || 'Quality'}</span>
+                  <span className="tabular-nums" style={{ fontWeight: 600 }}>{dispatch.receivedQuality || 'N/A'} {material.qualityUnit || ''}</span>
+                </div>
+              )}
               <div className="ios-separator" style={{ margin: '12px 0' }} />
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15 }}>
                 <span style={{ color: 'var(--label-secondary)' }}>Received Weight</span>
@@ -259,7 +283,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}E-Verified Dispatch V
           </div>
 
           <div className="ios-group">
-            <div className="ios-group-title">Coal Blending Sources</div>
+            <div className="ios-group-title">{material.name} Sources</div>
             <div className="ios-card-grouped">
               {dispatch.coalInputs?.map((input, idx) => (
                 <div key={input.id || idx}>
@@ -310,7 +334,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}E-Verified Dispatch V
               ))}
               {(!dispatch.coalInputs || dispatch.coalInputs.length === 0) && (
                 <div style={{ padding: '12px 16px', color: 'var(--label-tertiary)', fontSize: 15, textAlign: 'center' }}>
-                  No coal inputs recorded.
+                  No {material.name.toLowerCase()} sources recorded.
                 </div>
               )}
             </div>
@@ -329,7 +353,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}E-Verified Dispatch V
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8 }}>
                     <span style={{ color: 'var(--label-secondary)' }}>Base Agreement Rate</span>
-                    <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {dispatch.baseRate.toFixed(2)}</span>
+                    <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {displayedBaseRate.toFixed(2)}</span>
                   </div>
 
                   {adj.deduction > 0 && (
@@ -343,6 +367,13 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}E-Verified Dispatch V
                     <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: 'var(--ios-green)' }}>
                       <span>+ {adj.isProrata ? `Quality Premium (${adj.ruleLabel})` : 'Manual Premium'}</span>
                       <span className="tabular-nums">+ {curSym} {adj.premium.toFixed(2)}</span>
+                    </div>
+                  )}
+
+                  {settlement.dieselAdjustment !== 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 8, color: settlement.dieselAdjustment > 0 ? 'var(--ios-green)' : 'var(--ios-red)' }}>
+                      <span>{settlement.dieselAdjustment > 0 ? '+ Diesel Escalation' : '- Diesel De-escalation'}</span>
+                      <span className="tabular-nums">{settlement.dieselAdjustment > 0 ? '+' : '-'} {curSym} {Math.abs(settlement.dieselAdjustment).toFixed(2)}</span>
                     </div>
                   )}
 
@@ -383,7 +414,7 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}E-Verified Dispatch V
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, color: 'var(--label-secondary)', marginBottom: 12 }}>
-                    <span>Total Cost (Coal + Overheads)</span>
+                    <span>Total Cost ({material.name} + Overheads)</span>
                     <span className="tabular-nums">{curSym} {formatAmountNumber(settlement.totalCost, settings)}</span>
                   </div>
 

@@ -22,6 +22,21 @@ allprojects {
         google()
         mavenCentral()
     }
+    afterEvaluate { project ->
+        if (project.plugins.hasPlugin('com.android.application') || project.plugins.hasPlugin('com.android.library')) {
+            project.android {
+                compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_17
+                    targetCompatibility JavaVersion.VERSION_17
+                }
+            }
+        }
+        project.tasks.matching { it.name.startsWith("compile") && it.name.endsWith("Kotlin") }.configureEach {
+            try {
+                kotlinOptions.jvmTarget = "17"
+            } catch (Exception ignored) {}
+        }
+    }
 }
 
 task clean(type: Delete) {

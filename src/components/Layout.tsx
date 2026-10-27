@@ -19,6 +19,8 @@ import {
 } from 'lucide-react';
 import IOSAppLockScreen from './IOSAppLockScreen';
 import PWAInstallPrompt from './PWAInstallPrompt';
+import DesktopSidebar from './DesktopSidebar';
+import DesktopTopNav from './DesktopTopNav';
 import { recordActivity, evaluateLockOnResume, purgeRemovedRecoveryKeyArtifacts } from '../utils/securityLock';
 import { syncManager } from '../lib/syncManager';
 import {
@@ -48,6 +50,15 @@ export default function Layout() {
   const [toastNotice, setToastNotice] = useState<{ message: string; tone: ToastTone } | null>(null);
   const [pullDistance, setPullDistance] = useState(0);
   const [pullPhase, setPullPhase] = useState<PullSyncPhase>('idle');
+  const [desktopMode, setDesktopMode] = useState<'sidebar' | 'topbar'>(() => {
+    return (localStorage.getItem('desktop_layout_mode') as 'sidebar' | 'topbar') || 'topbar';
+  });
+
+  const handleDesktopModeChange = (mode: 'sidebar' | 'topbar') => {
+    setDesktopMode(mode);
+    localStorage.setItem('desktop_layout_mode', mode);
+    playPopSound();
+  };
   const liquidGlass = true;
   const navRef = useRef<HTMLElement>(null);
   const viewportRef = useRef<HTMLElement>(null);
@@ -310,7 +321,16 @@ export default function Layout() {
     purgeRemovedRecoveryKeyArtifacts();
     evaluateLockOnResume();
 
-    const handleTouchOrKey = () => recordActivity();
+    const handleTouchOrKey = (e?: Event) => {
+      recordActivity();
+      if (e instanceof KeyboardEvent && e.key === 'Escape') {
+        const backdrops = document.querySelectorAll<HTMLElement>('.ios-modal-backdrop');
+        if (backdrops.length > 0) {
+          const topBackdrop = backdrops[backdrops.length - 1];
+          topBackdrop.click();
+        }
+      }
+    };
     window.addEventListener('touchstart', handleTouchOrKey, { passive: true });
     window.addEventListener('mousedown', handleTouchOrKey, { passive: true });
     window.addEventListener('keydown', handleTouchOrKey, { passive: true });
@@ -325,6 +345,7 @@ export default function Layout() {
     document.addEventListener('visibilitychange', handleVisibility);
 
     let appStateHandle: any = null;
+    let appUrlHandle: any = null;
     if (Capacitor.isNativePlatform()) {
       CapApp.addListener('appStateChange', ({ isActive }) => {
         if (!isActive) {
@@ -335,6 +356,16 @@ export default function Layout() {
       }).then(handle => {
         appStateHandle = handle;
       });
+
+      CapApp.addListener('appUrlOpen', async (data) => {
+        if (data.url && (data.url.includes('seed') || data.url.includes('devSeed'))) {
+          if (typeof (window as any).seedTestData === 'function') {
+            await (window as any).seedTestData({ reload: true, clearBeforeSeed: true });
+          }
+        }
+      }).then(handle => {
+        appUrlHandle = handle;
+      });
     }
 
     return () => {
@@ -343,6 +374,7 @@ export default function Layout() {
       window.removeEventListener('keydown', handleTouchOrKey);
       document.removeEventListener('visibilitychange', handleVisibility);
       if (appStateHandle) appStateHandle.remove();
+      if (appUrlHandle) appUrlHandle.remove();
     };
   }, []);
 
@@ -412,8 +444,26 @@ export default function Layout() {
   const shellMode = getWebShellMode(isNative);
 
   return (
-    <div className={`device-stage ${shellMode.isEdgeToEdge ? 'fullscreen-mode' : ''}`}>
+    <div className={`device-stage ${shellMode.isEdgeToEdge ? 'fullscreen-mode' : ''} desktop-mode-${desktopMode}`}>
+      {!isNative && desktopMode === 'sidebar' && (
+        <DesktopSidebar
+          settings={settings}
+          performSync={performPullSync}
+          isSyncing={pullPhase === 'syncing'}
+          desktopMode={desktopMode}
+          onDesktopModeChange={handleDesktopModeChange}
+        />
+      )}
       <div className={`iphone-frame ${shellMode.isEdgeToEdge ? 'fullscreen-mode' : ''}`}>
+        {!isNative && desktopMode === 'topbar' && (
+          <DesktopTopNav
+            settings={settings}
+            performSync={performPullSync}
+            isSyncing={pullPhase === 'syncing'}
+            desktopMode={desktopMode}
+            onDesktopModeChange={handleDesktopModeChange}
+          />
+        )}
 
 
         {/* ── Toast Notification (Issue 28f: Full screen mobile width + centered) ── */}
@@ -458,7 +508,9 @@ export default function Layout() {
           </div>
           <div className="ios-pull-sync-content">
             <div className="ios-status-bar-spacer" aria-hidden="true" />
-            <Outlet context={{ settings }} />
+            <div className="desktop-canvas">
+              <Outlet context={{ settings }} />
+            </div>
           </div>
         </main>
 

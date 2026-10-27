@@ -125,6 +125,42 @@ describe('Issue 29: Firestore Security Rules Unit Tests', () => {
     );
   });
 
+  it('accepts backward-compatible multi-material dispatches and catalog settings', async () => {
+    const alice = ownerFirestore('alice');
+    const now = Date.now();
+    await assertSucceeds(setDoc(doc(alice, 'users/alice/dispatches/laterite-1'), {
+      ...validDispatch('laterite-1', now),
+      createdAt: now,
+      itemId: 'material-laterite',
+      itemName: 'Laterite',
+      pricingModel: 'purity',
+      qualityLabel: 'Purity',
+      qualityUnit: '%',
+      ratePerQualityUnit: 116,
+      receivedQuality: 30,
+      baseRate: 3480,
+      coalInputs: [{
+        id: 'input-1',
+        sourceName: 'Laterite Supplier',
+        supplierId: 'supplier-1',
+        weight: 10,
+        purchaseRate: 2200,
+      }],
+    }));
+    await assertSucceeds(setDoc(doc(alice, 'users/alice/settings/config'), {
+      materialItems: [{ id: 'material-laterite', name: 'Laterite', pricingModel: 'purity', defaultRate: 116 }],
+      suppliers: [{ id: 'supplier-1', name: 'Laterite Supplier' }],
+      updatedAt: now,
+    }));
+    await assertFails(setDoc(doc(alice, 'users/alice/dispatches/bad-material'), {
+      ...validDispatch('bad-material', now),
+      createdAt: now,
+      itemId: 'material-bad',
+      itemName: 'Bad Material',
+      pricingModel: 'arbitrary-formula',
+    }));
+  });
+
   it('allows an authenticated owner without an app-specific second factor', async () => {
     const alice = ownerFirestore('alice');
     await testEnv.withSecurityRulesDisabled(async (context) => {

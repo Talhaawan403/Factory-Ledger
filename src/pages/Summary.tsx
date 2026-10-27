@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { getDispatches, getParties, getPayments, getPurchaseOrders, getSettings, getGeneralExpenses, deleteGeneralExpense } from '../lib/db';
-import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings, GeneralExpense } from '../types';
+import { getDispatches, getParties, getPayments, getPurchaseOrders, getSettings, getGeneralExpenses, getLots, deleteGeneralExpense } from '../lib/db';
+import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings, GeneralExpense, InventoryLot } from '../types';
 import { calculateSettlement, calculatePartyBalance, isDispatchPending, calculateLedgerTotals, calculateBooksTotals, isDateInBooksPeriod } from '../utils/calculations';
 import { formatCurrency, formatCompactFinancial } from '../utils/currency';
 import { playPopSound, triggerConfetti } from '../utils/delight';
@@ -16,7 +16,8 @@ import {
     Calculator,
     ArrowDownRight,
     ReceiptText,
-    Plus
+    Plus,
+    Store
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import DealEstimatorModal from '../components/DealEstimatorModal';
@@ -29,6 +30,7 @@ export default function Summary() {
     const [dispatches, setDispatches] = useState<Dispatch[]>([]);
     const [parties, setParties] = useState<Party[]>([]);
     const [payments, setPayments] = useState<Payment[]>([]);
+    const [lots, setLots] = useState<InventoryLot[]>([]);
     const [expenses, setExpenses] = useState<GeneralExpense[]>([]);
     const [pos, setPos] = useState<PurchaseOrder[]>([]);
     const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
@@ -68,13 +70,14 @@ export default function Summary() {
 
     const loadData = useCallback(async () => {
         try {
-            const [d, p, pay, expenseList, poList, s] = await Promise.all([
+            const [d, p, pay, expenseList, poList, s, lotList] = await Promise.all([
                 getDispatches(),
                 getParties(),
                 getPayments(),
                 getGeneralExpenses(),
                 getPurchaseOrders(),
                 getSettings(),
+                getLots(),
             ]);
             setDispatches(d);
             setParties(p);
@@ -82,6 +85,7 @@ export default function Summary() {
             setExpenses(expenseList);
             setPos(poList);
             setSettings(s);
+            setLots(lotList);
             setLoadError(null);
         } catch (error) {
             console.error('[Summary] Could not load the overview:', error);
@@ -100,7 +104,8 @@ export default function Summary() {
             getGeneralExpenses(),
             getPurchaseOrders(),
             getSettings(),
-        ]).then(([d, p, pay, expenseList, poList, s]) => {
+            getLots(),
+        ]).then(([d, p, pay, expenseList, poList, s, lotList]) => {
             if (active) {
                 setDispatches(d);
                 setParties(p);
@@ -108,6 +113,7 @@ export default function Summary() {
                 setExpenses(expenseList);
                 setPos(poList);
                 setSettings(s);
+                setLots(lotList);
                 setLoadError(null);
                 setLoading(false);
             }
@@ -215,14 +221,33 @@ export default function Summary() {
         .slice(0, 5);
 
     const partyBalances = parties.map(party => {
-        const pDispatches = dispatches.filter(d => d.partyId === party.id);
-        const pPayments = payments.filter(p => p.partyId === party.id);
-        const balanceResult = calculatePartyBalance(pDispatches, pPayments);
-        return { party, balance: balanceResult.outstandingBalance, dispatchesCount: pDispatches.length };
+        const isSupplier = party.type === 'supplier';
+        const pDispatches = isSupplier ? [] : dispatches.filter(d => d.partyId === party.id);
+        const pPayments = payments.filter(p => p.partyId === party.id || (isSupplier && p.supplierId === party.id));
+        const balanceResult = calculatePartyBalance(pDispatches, pPayments, party, lots);
+        return {
+            party,
+            balance: balanceResult.outstandingBalance,
+            dispatchesCount: isSupplier ? balanceResult.dispatchesCount : pDispatches.length,
+            isSupplier,
+            balanceResult
+        };
     });
 
-    const totalReceivables = partyBalances.reduce((sum, pb) => pb.balance > 0 ? sum + pb.balance : sum, 0);
-    const partiesWithDues = partyBalances.filter(pb => pb.balance > 0);
+    const buyerBalances = partyBalances.filter(pb => !pb.isSupplier);
+    const totalReceivables = buyerBalances.reduce((sum, pb) => pb.balance > 0 ? sum + pb.balance : sum, 0);
+    const partiesWithDues = buyerBalances.filter(pb => pb.balance > 0);
+
+    const supplierBalances = partyBalances.filter(pb => pb.isSupplier);
+    const totalPayables = supplierBalances.reduce((sum, pb) => pb.balance > 0 ? sum + pb.balance : sum, 0);
+    const suppliersWithPayables = supplierBalances.filter(pb => pb.balance > 0);
+
+    const sortedPartyBalances = [...partyBalances].sort((a, b) => {
+        const aHasBal = Math.abs(a.balance) > 0 ? 1 : 0;
+        const bHasBal = Math.abs(b.balance) > 0 ? 1 : 0;
+        if (bHasBal !== aHasBal) return bHasBal - aHasBal;
+        return Math.abs(b.balance) - Math.abs(a.balance);
+    });
 
 
     const firstName = settings?.userName?.trim().split(/\s+/)[0] || '';
@@ -453,18 +478,27 @@ export default function Summary() {
                 {/* Revenue */}
                 <div
                     className="ios-metric-widget"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="View Total Inflow details in Dispatches"
                     onClick={() => {
                         navigate('/entries');
                         playPopSound();
                     }}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            navigate('/entries');
+                            playPopSound();
+                        }
+                    }}
                     style={{ cursor: 'pointer' }}
                 >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span className="ios-widget-title">Total Inflow</span>
-                        {/* <div className="ios-widget-icon" style={{ background: 'var(--tint-blue)' }}>
-                            <Activity style={{ width: 18, height: 18, color: 'var(--ios-blue)' }} strokeWidth={2.4} />
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 3, minWidth: 0 }}>
+                            <span className="ios-widget-title" style={{ whiteSpace: 'nowrap' }}>Total Inflow</span>
+                            <ChevronRight size={13} style={{ color: 'var(--label-tertiary)', flexShrink: 0 }} />
                         </div>
-                        */}
                     </div>
                     <div className="ios-widget-value">
                         {(() => {
@@ -476,26 +510,41 @@ export default function Summary() {
                             );
                         })()}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
-                        <TrendingUp style={{ width: 12, height: 12, color: 'var(--ios-green)' }} />
-                        <span>Factory-settled revenue</span>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <TrendingUp style={{ width: 12, height: 12, color: 'var(--ios-green)', flexShrink: 0 }} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Factory revenue</span>
+                        </div>
+                        {/*  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 1, color: 'var(--ios-blue)', fontWeight: 650, fontSize: 11, flexShrink: 0 }}>
+                            View <ChevronRight size={11} strokeWidth={2.4} />
+                        </span> */}
                     </div>
                 </div>
 
                 {/* Costs */}
                 <div
                     className="ios-metric-widget"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="View Total Outflow details in Dispatches"
                     onClick={() => {
                         navigate('/entries');
                         playPopSound();
                     }}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            navigate('/entries');
+                            playPopSound();
+                        }
+                    }}
                     style={{ cursor: 'pointer' }}
                 >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span className="ios-widget-title">Total Outflow</span>
-                        {/* <div className="ios-widget-icon" style={{ background: 'var(--tint-orange)' }}>
-                            <Coins style={{ width: 18, height: 18, color: 'var(--ios-orange)' }} strokeWidth={2.4} />
-                        </div> */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 3, minWidth: 0 }}>
+                            <span className="ios-widget-title" style={{ whiteSpace: 'nowrap' }}>Total Outflow</span>
+                            <ChevronRight size={13} style={{ color: 'var(--label-tertiary)', flexShrink: 0 }} />
+                        </div>
                     </div>
                     <div className="ios-widget-value">
                         {(() => {
@@ -507,24 +556,45 @@ export default function Summary() {
                             );
                         })()}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
-                        <span>Dispatch cost + general expenses</span>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <ArrowDownRight style={{ width: 12, height: 12, color: 'var(--ios-red)', flexShrink: 0 }} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Dispatches + exp.</span>
+                        </div>
+                        {/*  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 1, color: 'var(--ios-blue)', fontWeight: 650, fontSize: 11, flexShrink: 0 }}>
+                            View <ChevronRight size={11} strokeWidth={2.4} />
+                        </span> */}
                     </div>
                 </div>
 
                 {/* Independent warehouse / general expenses */}
                 <div
                     className="ios-metric-widget"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="Open General Expenses Ledger"
                     onClick={() => {
                         setExpenseInitialItem(null);
                         setExpenseInitialMode('list');
                         setIsExpensesOpen(true);
                         playPopSound();
                     }}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setExpenseInitialItem(null);
+                            setExpenseInitialMode('list');
+                            setIsExpensesOpen(true);
+                            playPopSound();
+                        }
+                    }}
                     style={{ cursor: 'pointer' }}
                 >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span className="ios-widget-title">General Expenses</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 3, minWidth: 0 }}>
+                            <span className="ios-widget-title" style={{ whiteSpace: 'nowrap' }}>General Expenses</span>
+                            <ChevronRight size={13} style={{ color: 'var(--label-tertiary)', flexShrink: 0 }} />
+                        </div>
                         <button
                             type="button"
                             onClick={(e) => {
@@ -548,6 +618,8 @@ export default function Summary() {
                                 color: 'var(--ios-blue)',
                                 cursor: 'pointer',
                                 padding: 0,
+                                flexShrink: 0,
+                                transition: 'transform 0.15s ease, background 0.15s ease',
                             }}
                         >
                             <Plus size={15} strokeWidth={2.4} />
@@ -566,22 +638,57 @@ export default function Summary() {
                             );
                         })()}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
-                        <ReceiptText size={12} style={{ color: 'var(--ios-orange)' }} />
-                        <span>
-                            {periodExpenses.length === 0
-                                ? 'No overheads in period'
-                                : topExpenseCategoryMeta
-                                    ? `${periodExpenses.length} ${periodExpenses.length === 1 ? 'entry' : 'entries'} · ${topExpenseCategoryMeta.label}`
-                                    : `${periodExpenses.length} entries recorded`}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <ReceiptText size={12} style={{ color: 'var(--ios-orange)', flexShrink: 0 }} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {periodExpenses.length === 0
+                                    ? 'No overheads'
+                                    : topExpenseCategoryMeta
+                                        ? `${periodExpenses.length} ${periodExpenses.length === 1 ? 'entry' : 'entries'} · ${topExpenseCategoryMeta.label}`
+                                        : `${periodExpenses.length} ${periodExpenses.length === 1 ? 'entry' : 'entries'}`}
+                            </span>
+                        </div>
+                        <span
+                            style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 1,
+                                color: 'var(--ios-blue)',
+                                fontWeight: 650,
+                                fontSize: 11,
+                                flexShrink: 0,
+                            }}
+                        >
+                            View <ChevronRight size={11} strokeWidth={2.4} />
                         </span>
                     </div>
                 </div>
 
                 {/* Capital currently committed to trucks awaiting settlement */}
-                <div className="ios-metric-widget" onClick={() => navigate('/entries')} style={{ cursor: 'pointer' }}>
+                <div
+                    className="ios-metric-widget"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="View Capital in Transit details in Dispatches"
+                    onClick={() => {
+                        navigate('/entries');
+                        playPopSound();
+                    }}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            navigate('/entries');
+                            playPopSound();
+                        }
+                    }}
+                    style={{ cursor: 'pointer' }}
+                >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span className="ios-widget-title">Capital in Transit</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 3, minWidth: 0 }}>
+                            <span className="ios-widget-title" style={{ whiteSpace: 'nowrap' }}>Capital in Transit</span>
+                            <ChevronRight size={13} style={{ color: 'var(--label-tertiary)', flexShrink: 0 }} />
+                        </div>
                     </div>
                     <div className="ios-widget-value">
                         {(() => {
@@ -589,55 +696,92 @@ export default function Summary() {
                             return <>{value.symbol} {value.value}<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginLeft: 3 }}>{value.unit}</span></>;
                         })()}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
-                        <Truck size={12} style={{ color: 'var(--ios-blue)' }} />
-                        <span>{booksTotals.pendingCount} revenue pending</span>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <Truck size={12} style={{ color: 'var(--ios-blue)', flexShrink: 0 }} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{booksTotals.pendingCount} pending</span>
+                        </div>
+                        {/*  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 1, color: 'var(--ios-blue)', fontWeight: 650, fontSize: 11, flexShrink: 0 }}>
+                            View <ChevronRight size={11} strokeWidth={2.4} />
+                        </span> */}
                     </div>
                 </div>
 
                 {/* Total Dispatches */}
                 <div
                     className="ios-metric-widget"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="View all Dispatches"
                     onClick={() => {
                         navigate('/entries');
                         playPopSound();
                     }}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            navigate('/entries');
+                            playPopSound();
+                        }
+                    }}
                     style={{ cursor: 'pointer' }}
                 >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span className="ios-widget-title">Dispatches</span>
-                        {/* <div className="ios-widget-icon" style={{ background: 'var(--tint-teal)' }}>
-                            <Truck style={{ width: 18, height: 18, color: 'var(--ios-teal)' }} strokeWidth={2.4} />
-                        </div> */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 3, minWidth: 0 }}>
+                            <span className="ios-widget-title" style={{ whiteSpace: 'nowrap' }}>Dispatches</span>
+                            <ChevronRight size={13} style={{ color: 'var(--label-tertiary)', flexShrink: 0 }} />
+                        </div>
                     </div>
                     <div className="ios-widget-value">
                         {filteredDispatches.length}<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginLeft: 3 }}>Trucks</span>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
-                        <span>Avg {(totalTons / Math.max(1, filteredDispatches.length)).toFixed(1)} t / truck</span>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <Scale size={12} style={{ color: 'var(--ios-teal)', flexShrink: 0 }} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Avg {(totalTons / Math.max(1, filteredDispatches.length)).toFixed(1)} t/truck</span>
+                        </div>
+                        {/*  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 1, color: 'var(--ios-blue)', fontWeight: 650, fontSize: 11, flexShrink: 0 }}>
+                            View <ChevronRight size={11} strokeWidth={2.4} />
+                        </span>*/}
                     </div>
                 </div>
 
                 {/* Active Parties */}
                 <div
                     className="ios-metric-widget"
+                    role="button"
+                    tabIndex={0}
+                    aria-label="View Parties directory"
                     onClick={() => {
                         navigate('/parties');
                         playPopSound();
                     }}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            navigate('/parties');
+                            playPopSound();
+                        }
+                    }}
                     style={{ cursor: 'pointer' }}
                 >
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                        <span className="ios-widget-title">Parties</span>
-                        {/* <div className="ios-widget-icon" style={{ background: 'var(--tint-purple)' }}>
-                            <Building2 style={{ width: 18, height: 18, color: 'var(--ios-purple)' }} strokeWidth={2.4} />
-                        </div> */}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 3, minWidth: 0 }}>
+                            <span className="ios-widget-title" style={{ whiteSpace: 'nowrap' }}>Parties</span>
+                            <ChevronRight size={13} style={{ color: 'var(--label-tertiary)', flexShrink: 0 }} />
+                        </div>
                     </div>
                     <div className="ios-widget-value">
-                        {parties.length}<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginLeft: 3 }}>Plants</span>
+                        {parties.length}<span style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginLeft: 3 }}>Accounts</span>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
-                        <span>Accounts active</span>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, fontSize: 11, color: 'var(--label-secondary)', marginTop: -2 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <Store size={12} style={{ color: 'var(--ios-purple)', flexShrink: 0 }} />
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{buyerBalances.length}B · {supplierBalances.length}S</span>
+                        </div>
+                        {/*  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 1, color: 'var(--ios-blue)', fontWeight: 650, fontSize: 11, flexShrink: 0 }}>
+                            View <ChevronRight size={11} strokeWidth={2.4} />
+                        </span> */}
                     </div>
                 </div>
             </div>
@@ -1162,93 +1306,209 @@ export default function Summary() {
             {/* ── Key Parties Grouped Section with Live Ledger Balances ── */}
             {parties.length > 0 && (
                 <div className="ios-group">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div className="ios-group-title">Active Factory Accounts</div>
-                        {totalReceivables > 0 && (
-                            <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-amber)', padding: '2px 8px', borderRadius: 8, marginRight: 16 }}>
-                                {formatCompactFinancial(totalReceivables, settings, 2).fullString} Dues ({partiesWithDues.length})
-                            </span>
-                        )}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '0 16px 8px' }}>
+                        <div className="ios-group-title" style={{ margin: 0 }}>Active Accounts</div>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                navigate('/parties');
+                                playPopSound();
+                            }}
+                            style={{
+                                background: 'none',
+                                border: 'none',
+                                color: 'var(--ios-blue)',
+                                fontSize: 14,
+                                fontWeight: 500,
+                                cursor: 'pointer',
+                                padding: 0,
+                            }}
+                        >
+                            See All
+                        </button>
                     </div>
+
+                    {(totalReceivables > 0 || totalPayables > 0) && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 16px 12px', flexWrap: 'wrap' }}>
+                            {totalReceivables > 0 && (
+                                <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: 'var(--ios-blue)', padding: '3px 9px', borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'white', opacity: 0.9 }} />
+                                    {formatCompactFinancial(totalReceivables, settings, 2).fullString} Dues ({partiesWithDues.length})
+                                </span>
+                            )}
+                            {totalPayables > 0 && (
+                                <span style={{ fontSize: 11, fontWeight: 700, color: 'white', background: '#FF9500', padding: '3px 9px', borderRadius: 8, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                    <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'white', opacity: 0.9 }} />
+                                    {formatCompactFinancial(totalPayables, settings, 2).fullString} Payable ({suppliersWithPayables.length})
+                                </span>
+                            )}
+                        </div>
+                    )}
+
                     <div className="ios-card-grouped">
-                        {partyBalances.slice(0, 4).map((item, i) => {
-                            const { party, balance, dispatchesCount } = item;
-                            const isDues = balance > 0;
+                        {sortedPartyBalances.slice(0, 5).map((item, i) => {
+                            const { party, balance, dispatchesCount, isSupplier } = item;
+                            const isPositive = balance > 0;
+                            const isNegative = balance < 0;
+
+                            const roleLabel = isSupplier ? 'Supplier' : 'Buyer';
+                            const countLabel = isSupplier
+                                ? `${dispatchesCount} ${dispatchesCount === 1 ? 'delivery' : 'deliveries'}`
+                                : `${dispatchesCount} ${dispatchesCount === 1 ? 'dispatch' : 'dispatches'}`;
+
+                            const statusLabel = isSupplier
+                                ? (isPositive ? 'Payable' : isNegative ? 'Advance Paid' : 'Settled')
+                                : (isPositive ? 'Due' : isNegative ? 'Overpaid' : 'Settled');
+
+                            const balanceColor = isSupplier
+                                ? (isPositive ? '#FF9500' : isNegative ? 'var(--ios-green)' : 'var(--label-secondary)')
+                                : (isPositive ? 'var(--ios-orange)' : isNegative ? 'var(--ios-green)' : 'var(--label-secondary)');
+
+                            const statusBg = isPositive
+                                ? (isSupplier ? 'rgba(255,149,0,0.12)' : 'rgba(255,149,0,0.12)')
+                                : isNegative
+                                    ? 'rgba(52,199,89,0.12)'
+                                    : 'var(--fill-quaternary)';
 
                             return (
                                 <div
                                     key={party.id}
                                     className="ios-cell"
-                                    onClick={() => navigate(`/parties/${party.id}`)}
+                                    role="button"
+                                    tabIndex={0}
+                                    aria-label={`Open ledger for ${party.name}, ${statusLabel}: ${formatCurrency(Math.abs(balance), settings)}`}
+                                    onClick={() => {
+                                        playPopSound();
+                                        navigate(`/parties/${party.id}`);
+                                    }}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' || e.key === ' ') {
+                                            e.preventDefault();
+                                            playPopSound();
+                                            navigate(`/parties/${party.id}`);
+                                        }
+                                    }}
                                     style={{
-                                        minHeight: 64,
-                                        paddingTop: 12,
-                                        paddingBottom: 12,
+                                        minHeight: 84,
+                                        paddingTop: 14,
+                                        paddingBottom: 14,
+                                        paddingLeft: 16,
+                                        paddingRight: 14,
                                         cursor: 'pointer',
+                                        alignItems: 'center',
                                     }}
                                 >
                                     <div
                                         className="ios-glyph-badge"
                                         style={{
-                                            background: `hsl(${party.name.charCodeAt(0) * 23 % 360}, 60%, 46%)`,
-                                            width: 36,
-                                            height: 36,
-                                            borderRadius: 9,
+                                            background: isSupplier
+                                                ? 'linear-gradient(135deg, #FF9500 0%, #D97706 100%)'
+                                                : `hsl(${party.name.charCodeAt(0) * 23 % 360}, 62%, 46%)`,
+                                            width: 42,
+                                            height: 42,
+                                            borderRadius: 11,
                                             marginRight: 12,
                                             flexShrink: 0,
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            color: 'white',
+                                            boxShadow: '0 2px 6px rgba(0,0,0,0.12)',
                                         }}
                                     >
-                                        <Building2 style={{ width: 18, height: 18 }} />
+                                        {isSupplier ? <Store style={{ width: 20, height: 20 }} /> : <Building2 style={{ width: 20, height: 20 }} />}
                                     </div>
-                                    <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
-                                        <div
-                                            style={{
-                                                fontSize: 15,
-                                                fontWeight: 600,
-                                                color: 'var(--label-primary)',
-                                                overflow: 'hidden',
-                                                textOverflow: 'ellipsis',
-                                                whiteSpace: 'nowrap',
-                                                letterSpacing: '-0.24px',
-                                                lineHeight: 1.25,
-                                            }}
-                                        >
-                                            {party.name}
+
+                                    {/* 3-Row Center Column */}
+                                    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4, paddingRight: 6 }}>
+                                        {/* Row 1: Party Name & Role Badge */}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                                            <div
+                                                style={{
+                                                    fontSize: 15.5,
+                                                    fontWeight: 650,
+                                                    color: 'var(--label-primary)',
+                                                    overflow: 'hidden',
+                                                    textOverflow: 'ellipsis',
+                                                    whiteSpace: 'nowrap',
+                                                    letterSpacing: '-0.24px',
+                                                    lineHeight: 1.25,
+                                                }}
+                                            >
+                                                {party.name}
+                                            </div>
+                                            <span
+                                                style={{
+                                                    fontSize: 9.5,
+                                                    fontWeight: 700,
+                                                    padding: '1.5px 5.5px',
+                                                    borderRadius: 4,
+                                                    background: isSupplier ? 'rgba(255,149,0,0.14)' : 'rgba(0,122,255,0.14)',
+                                                    color: isSupplier ? '#FF9500' : 'var(--ios-blue)',
+                                                    textTransform: 'uppercase',
+                                                    letterSpacing: '0.4px',
+                                                    flexShrink: 0,
+                                                }}
+                                            >
+                                                {roleLabel}
+                                            </span>
                                         </div>
+
+                                        {/* Row 2: Deliveries & Contact info */}
                                         <div
                                             style={{
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: 6,
                                                 fontSize: 12,
                                                 color: 'var(--label-secondary)',
-                                                marginTop: 3,
                                                 overflow: 'hidden',
                                                 textOverflow: 'ellipsis',
                                                 whiteSpace: 'nowrap',
                                                 lineHeight: 1.2,
                                             }}
                                         >
-                                            {dispatchesCount} dispatches · {party.contactPerson?.split(' ')[0] || 'Plant'}
+                                            <span>{countLabel}</span>
+                                            <span style={{ opacity: 0.35 }}>•</span>
+                                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                {party.contactPerson?.trim() || (isSupplier ? 'Mine / Quarry Yard' : 'Plant / Warehouse')}
+                                            </span>
+                                        </div>
+
+                                        {/* Row 3: Status Pill & Balance Amount */}
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 1 }}>
+                                            <span
+                                                style={{
+                                                    fontSize: 9.5,
+                                                    fontWeight: 700,
+                                                    padding: '1.5px 6px',
+                                                    borderRadius: 4,
+                                                    background: statusBg,
+                                                    color: balanceColor,
+                                                    textTransform: 'uppercase',
+                                                    letterSpacing: '0.3px',
+                                                    flexShrink: 0,
+                                                }}
+                                            >
+                                                {statusLabel}
+                                            </span>
+                                            <span
+                                                className="tabular-nums"
+                                                style={{
+                                                    fontSize: 14,
+                                                    fontWeight: 700,
+                                                    color: balanceColor,
+                                                    letterSpacing: '-0.2px',
+                                                    lineHeight: 1.2,
+                                                }}
+                                            >
+                                                {formatCurrency(Math.abs(balance), settings)}
+                                            </span>
                                         </div>
                                     </div>
-                                    <div style={{ textAlign: 'right', flexShrink: 0, marginRight: 4 }}>
-                                        <div
-                                            style={{
-                                                fontSize: 15,
-                                                fontWeight: 700,
-                                                color: isDues ? 'var(--ios-orange)' : balance < 0 ? 'var(--ios-green)' : 'var(--label-secondary)',
-                                                whiteSpace: 'nowrap',
-                                                letterSpacing: '-0.3px',
-                                                lineHeight: 1.25,
-                                            }}
-                                            className="tabular-nums"
-                                        >
-                                            {isDues ? 'Due ' : balance < 0 ? 'Adv ' : ''}{formatCurrency(Math.abs(balance), settings)}
-                                        </div>
-                                        <div style={{ fontSize: 11, color: 'var(--label-tertiary)', marginTop: 3, lineHeight: 1.2 }}>
-                                            {isDues ? 'Receivable' : balance < 0 ? 'Overpaid' : 'Settled'}
-                                        </div>
-                                    </div>
+
                                     <ChevronRight className="ios-chevron" strokeWidth={2.4} style={{ marginLeft: 6, flexShrink: 0 }} />
-                                    {i < Math.min(partyBalances.length, 4) - 1 && <div className="ios-separator with-glyph" style={{ left: 64 }} />}
+                                    {i < Math.min(sortedPartyBalances.length, 5) - 1 && <div className="ios-separator with-glyph" style={{ left: 70 }} />}
                                 </div>
                             );
                         })}

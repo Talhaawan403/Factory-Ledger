@@ -17,6 +17,7 @@ export default function FloatingField({
   helperText,
   style,
   inputStyle,
+  allowNegative = false,
 }: {
   label: string;
   value: string | number;
@@ -33,8 +34,10 @@ export default function FloatingField({
   helperText?: string;
   style?: React.CSSProperties;
   inputStyle?: React.CSSProperties;
+  allowNegative?: boolean;
 }) {
   const isNumberType = type === 'number';
+  const isTelType = type === 'tel';
   const inputRef = useRef<HTMLInputElement>(null);
   const [isFocused, setIsFocused] = useState(false);
   const [localVal, setLocalVal] = useState<string>(() => {
@@ -67,7 +70,36 @@ export default function FloatingField({
     Boolean(localVal !== '' && localVal !== undefined && localVal !== null);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!isNumberType) return;
+    if (!isNumberType && !isTelType) return;
+
+    // Allow navigation & control keys
+    if (
+      e.key === 'Backspace' ||
+      e.key === 'Delete' ||
+      e.key === 'Tab' ||
+      e.key === 'Escape' ||
+      e.key === 'Enter' ||
+      e.key === 'ArrowLeft' ||
+      e.key === 'ArrowRight' ||
+      e.key === 'ArrowUp' ||
+      e.key === 'ArrowDown' ||
+      e.key === 'Home' ||
+      e.key === 'End' ||
+      e.ctrlKey ||
+      e.metaKey
+    ) {
+      return;
+    }
+
+    if (isTelType) {
+      // Allow phone characters: digits 0-9, +, -, space, (, ), #, *
+      if ((e.key >= '0' && e.key <= '9') || ['+', '-', ' ', '(', ')', '#', '*'].includes(e.key)) {
+        return;
+      }
+      // Block all alphabetic and injection characters
+      e.preventDefault();
+      return;
+    }
 
     // Handle backspace right after comma
     if (e.key === 'Backspace') {
@@ -81,7 +113,7 @@ export default function FloatingField({
           const charToDeleteIndex = start - 2;
           if (charToDeleteIndex >= 0) {
             const modified = val.slice(0, charToDeleteIndex) + val.slice(start - 1);
-            const clean = stripNonNumeric(modified);
+            const clean = stripNonNumeric(modified, true, allowNegative);
             const formatted = formatNumberWithCommas(clean);
             const cursor = calculateNewCursor(val, formatted, charToDeleteIndex);
             setLocalVal(formatted);
@@ -109,7 +141,7 @@ export default function FloatingField({
           const charToDeleteIndex = start + 1;
           if (charToDeleteIndex < val.length) {
             const modified = val.slice(0, start) + val.slice(start + 2);
-            const clean = stripNonNumeric(modified);
+            const clean = stripNonNumeric(modified, true, allowNegative);
             const formatted = formatNumberWithCommas(clean);
             const cursor = calculateNewCursor(val, formatted, start);
             setLocalVal(formatted);
@@ -125,25 +157,6 @@ export default function FloatingField({
       }
     }
 
-    // Allow navigation & control keys
-    if (
-      e.key === 'Backspace' ||
-      e.key === 'Delete' ||
-      e.key === 'Tab' ||
-      e.key === 'Escape' ||
-      e.key === 'Enter' ||
-      e.key === 'ArrowLeft' ||
-      e.key === 'ArrowRight' ||
-      e.key === 'ArrowUp' ||
-      e.key === 'ArrowDown' ||
-      e.key === 'Home' ||
-      e.key === 'End' ||
-      e.ctrlKey ||
-      e.metaKey
-    ) {
-      return;
-    }
-
     // Allow digits 0-9
     if (e.key >= '0' && e.key <= '9') {
       return;
@@ -156,14 +169,21 @@ export default function FloatingField({
       }
     }
 
-    // Block any other key (letters, symbols)
+    // Allow leading minus sign if allowNegative is enabled
+    if (e.key === '-' && allowNegative) {
+      if (!e.currentTarget.value.includes('-')) {
+        return;
+      }
+    }
+
+    // Block any other key (letters, symbols, script injection)
     e.preventDefault();
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (isNumberType) {
       const rawInput = e.target.value;
-      const clean = stripNonNumeric(rawInput);
+      const clean = stripNonNumeric(rawInput, true, allowNegative);
       if (clean === '') {
         setLocalVal('');
         onChange('');
@@ -178,6 +198,11 @@ export default function FloatingField({
           inputRef.current.setSelectionRange(cursor, cursor);
         }
       });
+    } else if (isTelType) {
+      // Strip any letters or unsafe script characters from phone inputs
+      const cleanTel = e.target.value.replace(/[^0-9+\-\s()#*]/g, '');
+      setLocalVal(cleanTel);
+      onChange(cleanTel);
     } else {
       const val = e.target.value;
       setLocalVal(val);
@@ -211,8 +236,8 @@ export default function FloatingField({
         <input
           ref={inputRef}
           type={isNumberType ? 'text' : type}
-          inputMode={isNumberType ? 'decimal' : undefined}
-          pattern={isNumberType ? '[0-9,.]*' : undefined}
+          inputMode={isNumberType ? 'decimal' : isTelType ? 'tel' : undefined}
+          pattern={isNumberType ? '[0-9,.]*' : isTelType ? '[0-9+\\-\\s()#*]*' : undefined}
           autoComplete="off"
           step={step}
           required={required}
@@ -222,7 +247,7 @@ export default function FloatingField({
           placeholder={isFloated && placeholder ? placeholder : ''}
           value={localVal}
           onChange={handleChange}
-          onKeyDown={isNumberType ? handleKeyDown : undefined}
+          onKeyDown={isNumberType || isTelType ? handleKeyDown : undefined}
           onFocus={() => setIsFocused(true)}
           onBlur={handleBlur}
           className="floating-input"

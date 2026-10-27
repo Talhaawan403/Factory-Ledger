@@ -1,10 +1,12 @@
-import type { Dispatch, Payment, TaxMethod, AppSettings, InventoryLot, Mine, GeneralExpense } from "../types";
+import type { Dispatch, Payment, TaxMethod, AppSettings, InventoryLot, Mine, SupplierProfile, GeneralExpense, Party } from "../types";
 import { getCachedSettings } from "../lib/db";
 import { getCurrencySymbol, formatAmountNumber } from "./currency";
+import { COAL_ITEM_ID } from "./materials";
 
 export interface SettlementResult {
   gcvDeduction: number;
   sulphurDeduction: number;
+  dieselAdjustment: number;
   adjustedRate: number;
   taxDeduction: number;
   netRate: number;
@@ -25,7 +27,7 @@ export interface EffectiveAdjustments {
 }
 
 export interface DispatchSlipRow {
-  kind: 'base-rate' | 'gcv-deduction' | 'gcv-premium' | 'adjusted-rate' | 'tax' | 'commission' | 'payable-rate' | 'total-revenue';
+  kind: 'base-rate' | 'gcv-deduction' | 'gcv-premium' | 'diesel' | 'adjusted-rate' | 'tax' | 'commission' | 'payable-rate' | 'total-revenue';
   label: string;
   amount: number;
   perTon: boolean;
@@ -54,11 +56,15 @@ export interface PartyBalanceResult {
   outstandingBalance: number;
   isReceivable: boolean;
   isAdvance: boolean;
+  isPayable?: boolean;
+  totalPurchases?: number;
+  netPaymentsPaid?: number;
   isCleared: boolean;
   totalTons: number;
   totalProfit: number;
   dispatchesCount: number;
   paymentsCount: number;
+  partyType?: 'buyer' | 'supplier';
 }
 
 function cleanNum(val: any, fallback = 0): number {
@@ -69,7 +75,17 @@ function cleanNum(val: any, fallback = 0): number {
     return fallback;
   }
   const str = String(val).replace(/,/g, '').trim();
-  if (str === '') return fallback;
+  const lower = str.toLowerCase();
+  if (
+    str === '' ||
+    lower === 'nan' ||
+    lower === 'infinity' ||
+    lower === '-infinity' ||
+    lower === 'null' ||
+    lower === 'undefined'
+  ) {
+    return fallback;
+  }
   const p = Number(str);
   return isNaN(p) || !isFinite(p) ? fallback : p;
 }
@@ -88,6 +104,7 @@ export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings |
     return {
       gcvDeduction: 0,
       sulphurDeduction: 0,
+      dieselAdjustment: 0,
       adjustedRate: 0,
       taxDeduction: 0,
       netRate: 0,
@@ -99,17 +116,20 @@ export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings |
     };
   }
 
-  const baseRate = cleanNum(dispatch.baseRate);
+  const baseRate = dispatch.pricingModel === 'purity'
+    ? cleanNum(dispatch.ratePerQualityUnit) * cleanNum(dispatch.receivedQuality)
+    : cleanNum(dispatch.baseRate);
   const labReceivedWeight = cleanNum(dispatch.labReceivedWeight);
   const manualDeduction = cleanNum(dispatch.manualDeduction);
   const manualPremium = cleanNum(dispatch.manualPremium);
+  const dieselAdjustment = cleanNum(dispatch.dieselRateAdjustment);
   const manualTax = cleanNum(dispatch.manualTax);
   const commissionPerTon = cleanNum(dispatch.commissionPerTon);
   const overheads = dispatch.overheads || ({} as any);
   const coalInputs = Array.isArray(dispatch.coalInputs) ? dispatch.coalInputs : [];
 
   // Pro-rata GCV pricing calculation (contract rule on PO / dispatch)
-  const isProrata = dispatch.gcvAdjustment === 'prorata';
+  const isProrata = (dispatch.pricingModel === undefined || dispatch.pricingModel === 'gcv') && dispatch.gcvAdjustment === 'prorata';
   let effectiveDeduction = manualDeduction;
   let effectivePremium = manualPremium;
 
@@ -134,8 +154,8 @@ export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings |
     }
   }
 
-  // 1. Calculate Adjusted Rate: Base Rate - GCV Deduction + GCV Premium
-  const adjustedRate = baseRate - effectiveDeduction + effectivePremium;
+  // 1. Calculate Adjusted Rate: Base Rate - GCV Deduction + GCV Premium + Diesel Adjustment
+  const adjustedRate = baseRate - effectiveDeduction + effectivePremium + dieselAdjustment;
 
   // 2. Determine Tax Deduction:
   //    - If taxMethod === 'manual', use manualTax.
@@ -152,13 +172,16 @@ export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings |
             ? appSettings.taxFormulaSalesPercent
             : 18));
 
+  const isLaterite = dispatch.itemId === 'material-laterite' || (dispatch.itemName || '').toLowerCase().includes('laterite');
+  const defaultIncomePercent = isLaterite ? 5.5 : 5;
+
   const incomePercent = typeof dispatch.taxIncomePercent === 'number'
     ? dispatch.taxIncomePercent
     : (isExistingSaved
-        ? 5
-        : (typeof appSettings?.taxFormulaIncomePercent === 'number'
+        ? (dispatch.taxIncomePercent ?? defaultIncomePercent)
+        : (typeof appSettings?.taxFormulaIncomePercent === 'number' && !isLaterite
             ? appSettings.taxFormulaIncomePercent
-            : 5));
+            : defaultIncomePercent));
 
   const activeTaxMethod: TaxMethod = dispatch.taxMethod || 'manual';
   const taxDeduction =
@@ -184,6 +207,7 @@ export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings |
   return {
     gcvDeduction: cleanNum(effectiveDeduction), 
     sulphurDeduction: 0,
+    dieselAdjustment: cleanNum(dieselAdjustment),
     adjustedRate: cleanNum(adjustedRate),
     taxDeduction: cleanNum(taxDeduction),
     netRate: cleanNum(payableRate + commissionPerTon),
@@ -204,7 +228,7 @@ export function calculateSettlement(dispatch: Dispatch, settings?: AppSettings |
  */
 export function getEffectiveAdjustments(dispatch: Dispatch, settings?: AppSettings | null): EffectiveAdjustments {
   const s = calculateSettlement(dispatch, settings);
-  const isProrata = dispatch?.gcvAdjustment === 'prorata';
+  const isProrata = (dispatch?.pricingModel === undefined || dispatch?.pricingModel === 'gcv') && dispatch?.gcvAdjustment === 'prorata';
   const targetGcv = cleanNum(dispatch?.targetGcv);
   const labGcv = cleanNum(dispatch?.labActualGcv);
   return {
@@ -227,18 +251,22 @@ export function buildDispatchSlipRows(dispatch: Dispatch, settings?: AppSettings
   const curSym = getCurrencySymbol(settings?.currency);
   const rows: DispatchSlipRow[] = [];
 
+  const pureBaseRate = s.adjustedRate + adj.deduction - adj.premium - s.dieselAdjustment;
+
   rows.push({
     kind: 'base-rate',
-    label: 'Contract Base Rate',
-    amount: cleanNum(dispatch?.baseRate),
+    label: dispatch?.pricingModel === 'purity'
+      ? `${dispatch.qualityLabel || 'Purity'}-Derived Rate`
+      : 'Contract Base Rate',
+    amount: pureBaseRate,
     perTon: true,
-    formattedText: `${curSym} ${cleanNum(dispatch?.baseRate).toFixed(2)} / ton`,
+    formattedText: `${curSym} ${pureBaseRate.toFixed(2)} / ton`,
   });
 
   if (adj.deduction > 0) {
     const label = adj.isProrata
       ? `GCV Quality Deduction (${adj.ruleLabel})`
-      : 'GCV Quality Deduction';
+      : 'Quality Deduction';
     rows.push({
       kind: 'gcv-deduction',
       label,
@@ -258,6 +286,17 @@ export function buildDispatchSlipRows(dispatch: Dispatch, settings?: AppSettings
       amount: adj.premium,
       perTon: true,
       formattedText: `+ ${curSym} ${adj.premium.toFixed(2)} / ton`,
+    });
+  }
+
+  if (s.dieselAdjustment !== 0) {
+    const isEscalation = s.dieselAdjustment > 0;
+    rows.push({
+      kind: 'diesel',
+      label: isEscalation ? 'Diesel Escalation (Premium)' : 'Diesel De-escalation (Deduction)',
+      amount: Math.abs(s.dieselAdjustment),
+      perTon: true,
+      formattedText: `${isEscalation ? '+' : '-'} ${curSym} ${Math.abs(s.dieselAdjustment).toFixed(2)} / ton`,
     });
   }
 
@@ -476,10 +515,75 @@ export function calculateLedgerTotals(dispatches: Dispatch[], settings?: AppSett
  * Net Received = Total Received - Total Paid Out.
  * Outstanding Balance = Total Billed - Net Received.
  */
-export function calculatePartyBalance(dispatches: Dispatch[], payments: Payment[]): PartyBalanceResult {
-  const safeDispatches = Array.isArray(dispatches) ? dispatches : [];
+export function calculatePartyBalance(
+  dispatches: Dispatch[],
+  payments: Payment[],
+  party?: Party | null,
+  lots?: InventoryLot[]
+): PartyBalanceResult {
+  const isSupplier = party?.type === 'supplier';
   const safePayments = Array.isArray(payments) ? payments : [];
 
+  if (isSupplier) {
+    const cleanTarget = String(party?.name || '').trim().toLowerCase();
+    const safeLots = (lots || []).filter((l) => !l?.deleted && (
+      (party?.id && l.supplierId === party.id) ||
+      (!l.supplierId && cleanTarget && (l.supplier || l.boughtFrom || '').trim().toLowerCase() === cleanTarget)
+    ));
+
+    let totalPurchases = 0;
+    let totalTons = 0;
+    for (const lot of safeLots) {
+      const tons = cleanNum(lot.receivedWeight || lot.billedWeight || lot.tonnage || 0);
+      const rate = cleanNum(lot.purchaseRate || lot.ratePerTon || lot.landedRate || 0);
+      const val = lot.totalValue !== undefined ? cleanNum(lot.totalValue) : tons * rate;
+      totalPurchases += val;
+      totalTons += tons;
+    }
+
+    const partyPayments = safePayments.filter((p) => !p?.deleted && (
+      (party?.id && (p.partyId === party.id || p.supplierId === party.id)) ||
+      (!p.partyId && !p.supplierId && cleanTarget && (p as any).partyName?.trim().toLowerCase() === cleanTarget)
+    ));
+
+    const totalPaymentsPaid = partyPayments
+      .filter((p) => p.type === 'paid' || (p as any).paymentType === 'paid' || !p.type)
+      .reduce((sum, p) => sum + roundPartyLedgerAmount(p.amount), 0);
+
+    const totalPaymentsReceived = partyPayments
+      .filter((p) => p.type === 'received' || (p as any).paymentType === 'received')
+      .reduce((sum, p) => sum + roundPartyLedgerAmount(p.amount), 0);
+
+    const netPaymentsPaid = totalPaymentsPaid - totalPaymentsReceived;
+    const roundedPurchases = Math.round(totalPurchases);
+    const outstandingBalance = roundedPurchases - netPaymentsPaid;
+
+    const isPayable = outstandingBalance > 50;
+    const isAdvance = outstandingBalance < -50;
+    const isCleared = (safeLots.length > 0 || partyPayments.length > 0) && Math.abs(outstandingBalance) <= 50;
+
+    return {
+      totalBilled: roundedPurchases,
+      totalPurchases: roundedPurchases,
+      totalPaymentsReceived,
+      totalPaymentsPaid,
+      netPaymentsPaid,
+      netPaymentsReceived: -netPaymentsPaid,
+      outstandingBalance,
+      isReceivable: isAdvance,
+      isAdvance,
+      isPayable,
+      isCleared,
+      totalTons: Math.round(totalTons * 100) / 100,
+      totalProfit: 0,
+      dispatchesCount: safeLots.length,
+      paymentsCount: partyPayments.length,
+      partyType: 'supplier',
+    };
+  }
+
+  // Buyer calculation (Default)
+  const safeDispatches = Array.isArray(dispatches) ? dispatches : [];
   const totals = calculateLedgerTotals(safeDispatches);
 
   // Party ledgers are posted at whole rupees per document. Do not sum precise
@@ -516,11 +620,13 @@ export function calculatePartyBalance(dispatches: Dispatch[], payments: Payment[
     outstandingBalance,
     isReceivable,
     isAdvance,
+    isPayable: false,
     isCleared,
     totalTons,
     totalProfit,
     dispatchesCount: nonDeletedDispatches.length,
     paymentsCount: nonDeletedPayments.length,
+    partyType: 'buyer',
   };
 }
 
@@ -600,9 +706,11 @@ export function calculateLotStock(lot: InventoryLot, dispatches: Dispatch[]): Lo
       }
     }
   }
-  const remainingWeight = cleanNum(lot.receivedWeight) - usedWeight;
+  const lotTotalWeight = cleanNum(lot.receivedWeight || lot.billedWeight || lot.tonnage || (lot as any).totalTons || 0);
+  const remainingWeight = lotTotalWeight - usedWeight;
   const isOverdrawn = remainingWeight < -0.001;
-  const capitalTiedUp = remainingWeight > 0 ? remainingWeight * cleanNum(lot.landedRate) : 0;
+  const landedRate = cleanNum(lot.landedRate || lot.purchaseRate || lot.ratePerTon || (lot as any).landedRatePerTon || 0);
+  const capitalTiedUp = remainingWeight > 0 ? remainingWeight * landedRate : 0;
   const roundedUsed = Math.round(usedWeight * 100) / 100;
   return {
     lot,
@@ -833,8 +941,8 @@ export function calculateMineStock(
   let totalInflowValue = 0;
 
   for (const lot of activeLots) {
-    const receivedTons = cleanNum(lot.receivedWeight || lot.billedWeight || lot.tonnage || 0);
-    const landedRate = cleanNum(lot.landedRate || lot.purchaseRate || lot.ratePerTon || mine.ratePerTon || 0);
+    const receivedTons = cleanNum(lot.receivedWeight || lot.billedWeight || lot.tonnage || (lot as any).totalTons || 0);
+    const landedRate = cleanNum(lot.landedRate || lot.purchaseRate || lot.ratePerTon || (lot as any).landedRatePerTon || mine.ratePerTon || 0);
     const value = lot.totalValue !== undefined ? cleanNum(lot.totalValue) : receivedTons * landedRate;
     totalInflowTons += receivedTons;
     totalInflowValue += value;
@@ -881,7 +989,7 @@ export function calculateMineStock(
       return {
         lot,
         remaining: Math.max(0, stock.remainingWeight),
-        landedRate: cleanNum(lot.landedRate || lot.purchaseRate || lot.ratePerTon || mine.ratePerTon || 0),
+        landedRate: cleanNum(lot.landedRate || lot.purchaseRate || lot.ratePerTon || (lot as any).landedRatePerTon || mine.ratePerTon || 0),
       };
     })
     .sort((a, b) => {
@@ -952,5 +1060,254 @@ export function calculateOverallMinesSummary(
     totalInflowTons: Math.round(totalInflowTons * 100) / 100,
     totalOutflowTons: Math.round(totalOutflowTons * 100) / 100,
     overdrawnCount,
+  };
+}
+
+export interface SupplierStockSummary {
+  supplier: SupplierProfile;
+  totalInflowTons: number;
+  totalInflowValue: number;
+  totalOutflowTons: number;
+  totalOutflowValue: number;
+  remainingTons: number;
+  remainingValue: number;
+  isOverdrawn: boolean;
+  entriesCount: number;
+  dispatchesCount: number;
+  status: 'in_stock' | 'low' | 'exhausted' | 'overdrawn';
+}
+
+/**
+ * Calculates stock balance and financials for an individual Supplier:
+ * Inflow = Sum of all stock entries (lots) linked to this supplier.
+ * Outflow = Sum of all material dispatches consuming stock from this supplier.
+ * Remaining Stock = Inflow Tons - Outflow Tons.
+ */
+export function calculateSupplierStock(
+  supplier: SupplierProfile,
+  lots: InventoryLot[],
+  dispatches: Dispatch[]
+): SupplierStockSummary {
+  const activeLots = (lots || []).filter(
+    (l) =>
+      !l.deleted &&
+      (l.supplierId === supplier.id ||
+        (!l.supplierId && (l.supplier || l.boughtFrom || '').trim().toLowerCase() === supplier.name.trim().toLowerCase()))
+  );
+
+  let totalInflowTons = 0;
+  let totalInflowValue = 0;
+
+  for (const lot of activeLots) {
+    const receivedTons = cleanNum(lot.receivedWeight || lot.billedWeight || lot.tonnage || (lot as any).totalTons || 0);
+    const landedRate = cleanNum(lot.landedRate || lot.purchaseRate || lot.ratePerTon || (lot as any).landedRatePerTon || 0);
+    const value = lot.totalValue !== undefined ? cleanNum(lot.totalValue) : receivedTons * landedRate;
+    totalInflowTons += receivedTons;
+    totalInflowValue += value;
+  }
+
+  const activeDispatches = (dispatches || []).filter((d) => !d.deleted);
+  const supplierLotIds = new Set(activeLots.map((lot) => lot.id));
+  let totalOutflowTons = 0;
+  let totalOutflowValue = 0;
+  let linkedDispatchesCount = 0;
+  let directSupplierOutflowTons = 0;
+
+  for (const dispatch of activeDispatches) {
+    let dispatchUsedSupplier = false;
+    for (const ci of dispatch.coalInputs || []) {
+      const matchesSupplier =
+        ci.supplierId === supplier.id ||
+        (Boolean(ci.lotId) && supplierLotIds.has(ci.lotId as string)) ||
+        (Boolean(ci.sourceName) && ci.sourceName.trim().toLowerCase() === supplier.name.trim().toLowerCase());
+      if (matchesSupplier) {
+        const weight = cleanNum(ci.weight);
+        totalOutflowTons += weight;
+        totalOutflowValue += weight * cleanNum(ci.purchaseRate);
+        if (!ci.lotId) directSupplierOutflowTons += weight;
+        dispatchUsedSupplier = true;
+      }
+    }
+    if (dispatchUsedSupplier) {
+      linkedDispatchesCount++;
+    }
+  }
+
+  const remainingTons = Math.round((totalInflowTons - totalOutflowTons) * 100) / 100;
+  const isOverdrawn = remainingTons < -0.001;
+
+  const remainingLots = activeLots
+    .map((lot) => {
+      const stock = calculateLotStock(lot, activeDispatches);
+      return {
+        lot,
+        remaining: Math.max(0, stock.remainingWeight),
+        landedRate: cleanNum(lot.landedRate || lot.purchaseRate || lot.ratePerTon || (lot as any).landedRatePerTon || 0),
+      };
+    })
+    .sort((a, b) => {
+      const dateCompare = String(a.lot.date || '').localeCompare(String(b.lot.date || ''));
+      return dateCompare || cleanNum(a.lot.createdAt) - cleanNum(b.lot.createdAt);
+    });
+
+  let unallocatedOutflow = directSupplierOutflowTons;
+  let remainingValue = 0;
+  for (const item of remainingLots) {
+    const consumed = Math.min(item.remaining, Math.max(0, unallocatedOutflow));
+    unallocatedOutflow -= consumed;
+    remainingValue += (item.remaining - consumed) * item.landedRate;
+  }
+
+  let status: 'in_stock' | 'low' | 'exhausted' | 'overdrawn' = 'in_stock';
+  if (isOverdrawn) {
+    status = 'overdrawn';
+  } else if (remainingTons <= 0) {
+    status = 'exhausted';
+  } else if (remainingTons < 20) {
+    status = 'low';
+  }
+
+  return {
+    supplier,
+    totalInflowTons: Math.round(totalInflowTons * 100) / 100,
+    totalInflowValue: Math.round(totalInflowValue),
+    totalOutflowTons: Math.round(totalOutflowTons * 100) / 100,
+    totalOutflowValue: Math.round(totalOutflowValue),
+    remainingTons,
+    remainingValue: Math.round(Math.max(0, remainingValue)),
+    isOverdrawn,
+    entriesCount: activeLots.length,
+    dispatchesCount: linkedDispatchesCount,
+    status,
+  };
+}
+
+export interface MaterialInventorySummary {
+  materialId: string;
+  totalSources: number;
+  totalYardTons: number;
+  totalYardValue: number;
+  totalInflowTons: number;
+  totalOutflowTons: number;
+  overdrawnCount: number;
+}
+
+/**
+ * Aggregates overall yard stock metrics for a specific material or across all materials
+ */
+export function calculateMaterialInventorySummary(
+  materialId: string | 'all',
+  mines: Mine[],
+  suppliers: SupplierProfile[],
+  lots: InventoryLot[],
+  dispatches: Dispatch[]
+): MaterialInventorySummary {
+  const isAll = materialId === 'all';
+  const targetMatId = isAll ? null : materialId;
+
+  // Mines are Coal sources by default
+  const activeMines = (mines || []).filter((m) => !m.deleted);
+  const isCoal = targetMatId === COAL_ITEM_ID || targetMatId === 'coal' || targetMatId === 'material-coal';
+  const relevantMines = isAll || isCoal ? activeMines : [];
+
+  // Suppliers can have materialIds or default to their assigned materials
+  const activeSuppliers = (suppliers || []).filter((s) => !s.isArchived);
+  const relevantSuppliers = isAll
+    ? activeSuppliers
+    : activeSuppliers.filter((s) => !s.materialIds?.length || s.materialIds.includes(targetMatId!));
+
+  let totalYardTons = 0;
+  let totalYardValue = 0;
+  let totalInflowTons = 0;
+  let totalOutflowTons = 0;
+  let overdrawnCount = 0;
+
+  for (const mine of relevantMines) {
+    const summary = calculateMineStock(mine, lots, dispatches);
+    totalYardTons += summary.remainingTons;
+    totalYardValue += summary.remainingValue;
+    totalInflowTons += summary.totalInflowTons;
+    totalOutflowTons += summary.totalOutflowTons;
+    if (summary.isOverdrawn) overdrawnCount++;
+  }
+
+  for (const supplier of relevantSuppliers) {
+    const summary = calculateSupplierStock(supplier, lots, dispatches);
+    totalYardTons += summary.remainingTons;
+    totalYardValue += summary.remainingValue;
+    totalInflowTons += summary.totalInflowTons;
+    totalOutflowTons += summary.totalOutflowTons;
+    if (summary.isOverdrawn) overdrawnCount++;
+  }
+
+  return {
+    materialId,
+    totalSources: relevantMines.length + relevantSuppliers.length,
+    totalYardTons: Math.round(totalYardTons * 100) / 100,
+    totalYardValue: Math.round(totalYardValue),
+    totalInflowTons: Math.round(totalInflowTons * 100) / 100,
+    totalOutflowTons: Math.round(totalOutflowTons * 100) / 100,
+    overdrawnCount,
+  };
+}
+
+export interface SupplierFinancialSummary {
+  totalPurchases: number;
+  totalBilled: number;
+  totalPaid: number;
+  outstandingBalance: number;
+  isPayable: boolean;
+  isAdvance: boolean;
+  isCleared: boolean;
+  purchasesCount: number;
+  paymentsCount: number;
+}
+
+/**
+ * Calculates financial ledger balances for a Supplier (or Mine):
+ * Total Purchases = sum of incoming stock delivery lot values
+ * Total Payments = sum of payments paid to this supplier
+ * Outstanding Balance = Total Purchases - Total Payments
+ */
+export function calculateSupplierFinancials(
+  supplierIdOrName: string,
+  lots: InventoryLot[],
+  payments: Payment[]
+): SupplierFinancialSummary {
+  const cleanTarget = String(supplierIdOrName || '').trim().toLowerCase();
+  const safeLots = (lots || []).filter((l) => !l.deleted && (
+    l.supplierId === supplierIdOrName ||
+    (!l.supplierId && (l.supplier || l.boughtFrom || '').trim().toLowerCase() === cleanTarget)
+  ));
+
+  let totalPurchases = 0;
+  for (const lot of safeLots) {
+    const tons = cleanNum(lot.receivedWeight || lot.billedWeight || lot.tonnage || 0);
+    const rate = cleanNum(lot.purchaseRate || lot.ratePerTon || lot.landedRate || 0);
+    const val = lot.totalValue !== undefined ? cleanNum(lot.totalValue) : tons * rate;
+    totalPurchases += val;
+  }
+
+  const safePayments = (payments || []).filter((p) => !p.deleted && (
+    p.supplierId === supplierIdOrName ||
+    p.partyId === supplierIdOrName ||
+    (!p.supplierId && !p.mineId && (p.partyId || '').trim().toLowerCase() === cleanTarget)
+  ) && (p.type === 'paid' || (p as any).paymentType === 'paid' || !p.type));
+
+  const totalPaid = safePayments.reduce((sum, p) => sum + cleanNum(p.amount), 0);
+  const roundedPurchases = Math.round(totalPurchases);
+  const roundedPaid = Math.round(totalPaid);
+  const outstandingBalance = roundedPurchases - roundedPaid;
+
+  return {
+    totalPurchases: roundedPurchases,
+    totalBilled: roundedPurchases,
+    totalPaid: roundedPaid,
+    outstandingBalance,
+    isPayable: outstandingBalance > 50,
+    isAdvance: outstandingBalance < -50,
+    isCleared: Math.abs(outstandingBalance) <= 50,
+    purchasesCount: safeLots.length,
+    paymentsCount: safePayments.length,
   };
 }

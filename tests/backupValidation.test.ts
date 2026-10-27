@@ -177,4 +177,34 @@ describe('Integrity & Validation: Backup Payload & Restore Hardening', () => {
     expect(await getParties()).toHaveLength(2);
     expect(await getPayments()).toHaveLength(1);
   });
+
+  it('validates material and supplier settings before restore', () => {
+    const valid = fullBackup({
+      settings: {
+        ...INITIAL_SETTINGS,
+        updatedAt: now,
+        materialItems: [{
+          id: 'material-laterite',
+          name: 'Laterite',
+          pricingModel: 'purity',
+          qualityLabel: 'Purity',
+          qualityUnit: '%',
+          defaultRate: 116,
+        }],
+        suppliers: [{ id: 'supplier-1', name: 'Supplier One', phone: '0300-0000000' }],
+      },
+    });
+    expect(validateBackupPayload(valid).valid).toBe(true);
+
+    const duplicateMaterial = structuredClone(valid);
+    duplicateMaterial.settings.materialItems = [
+      ...duplicateMaterial.settings.materialItems!,
+      { ...duplicateMaterial.settings.materialItems![0] },
+    ];
+    expect(validateBackupPayload(duplicateMaterial).error).toMatch(/duplicate material id/i);
+
+    const invalidSupplier = structuredClone(valid);
+    invalidSupplier.settings.suppliers = [{ id: '', name: 'Broken Supplier' }];
+    expect(validateBackupPayload(invalidSupplier).error).toMatch(/malformed supplier/i);
+  });
 });

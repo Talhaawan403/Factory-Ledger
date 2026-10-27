@@ -1,5 +1,5 @@
 import React, { useState, useRef, useMemo, useEffect } from 'react';
-import { ChevronDown, Check, Search, X, ChevronRight } from 'lucide-react';
+import { ChevronDown, Check, Search, X, ChevronRight, Plus } from 'lucide-react';
 import { playPopSound } from '../utils/delight';
 
 export interface IOSSelectOption<T extends string | number = string> {
@@ -43,6 +43,10 @@ export interface IOSSelectProps<T extends string | number = string> {
     isOpen: boolean;
     displayLabel: string;
   }) => React.ReactNode;
+  allowCustomOption?: boolean;
+  createOptionLabel?: (query: string) => string;
+  createOptionSubtitle?: (query: string) => string;
+  onCreateOption?: (query: string) => void;
 }
 
 export default function IOSSelect<T extends string | number = string>({
@@ -67,6 +71,10 @@ export default function IOSSelect<T extends string | number = string>({
   actionButton,
   customTrigger,
   error,
+  allowCustomOption = false,
+  createOptionLabel,
+  createOptionSubtitle,
+  onCreateOption,
 }: IOSSelectProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -90,6 +98,19 @@ export default function IOSSelect<T extends string | number = string>({
       return matchLabel || matchSubtitle;
     });
   }, [options, searchQuery]);
+
+  // Determine if a custom option should be shown when searching
+  const isCustomOptionApplicable = useMemo(() => {
+    if (!allowCustomOption) return false;
+    const trimmed = searchQuery.trim();
+    if (!trimmed) return false;
+    const hasExact = options.some(
+      (opt) =>
+        opt.label.trim().toLowerCase() === trimmed.toLowerCase() ||
+        String(opt.value).trim().toLowerCase() === trimmed.toLowerCase()
+    );
+    return !hasExact;
+  }, [allowCustomOption, searchQuery, options]);
 
   // Focus search input when sheet opens
   useEffect(() => {
@@ -121,6 +142,18 @@ export default function IOSSelect<T extends string | number = string>({
     handleClose();
   };
 
+  const handleSelectCustom = () => {
+    const trimmed = searchQuery.trim();
+    if (!trimmed) return;
+    playPopSound();
+    if (onCreateOption) {
+      onCreateOption(trimmed);
+    } else {
+      onChange(trimmed as unknown as T);
+    }
+    handleClose();
+  };
+
   const handleClear = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (onClear) {
@@ -130,7 +163,9 @@ export default function IOSSelect<T extends string | number = string>({
   };
 
   const isFloated = floating && (isOpen || Boolean(selectedOption) || Boolean(value));
-  const displayLabel = selectedOption ? selectedOption.label : '';
+  const displayLabel = selectedOption
+    ? selectedOption.label
+    : (allowCustomOption && value ? String(value) : '');
 
   return (
     <>
@@ -523,7 +558,78 @@ export default function IOSSelect<T extends string | number = string>({
                   }}
                   role="listbox"
                 >
-                  {filteredOptions.length === 0 ? (
+                  {isCustomOptionApplicable && (
+                    <div style={{ position: 'relative' }}>
+                      <button
+                        type="button"
+                        onClick={handleSelectCustom}
+                        style={{
+                          width: '100%',
+                          minHeight: 52,
+                          padding: '11px 16px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          background: 'rgba(10, 132, 255, 0.08)',
+                          border: 'none',
+                          textAlign: 'left',
+                          cursor: 'pointer',
+                          transition: 'background-color 0.15s ease',
+                          fontFamily: 'var(--font-system)',
+                          userSelect: 'none',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1 }}>
+                          <div
+                            style={{
+                              width: 30,
+                              height: 30,
+                              borderRadius: '50%',
+                              background: 'var(--ios-blue)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              color: '#FFFFFF',
+                              flexShrink: 0,
+                            }}
+                          >
+                            <Plus size={16} strokeWidth={2.5} />
+                          </div>
+                          <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, flex: 1 }}>
+                            <span
+                              style={{
+                                fontSize: 16,
+                                fontWeight: 600,
+                                color: 'var(--ios-blue)',
+                                whiteSpace: 'nowrap',
+                                overflow: 'hidden',
+                                textOverflow: 'ellipsis',
+                              }}
+                            >
+                              {createOptionLabel ? createOptionLabel(searchQuery.trim()) : `Use "${searchQuery.trim()}"`}
+                            </span>
+                            {createOptionSubtitle && (
+                              <span
+                                style={{
+                                  fontSize: 12,
+                                  color: 'var(--label-secondary)',
+                                  marginTop: 1,
+                                  whiteSpace: 'nowrap',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                }}
+                              >
+                                {createOptionSubtitle(searchQuery.trim())}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                      {filteredOptions.length > 0 && <div className="ios-separator with-glyph" style={{ left: 58 }} />}
+                    </div>
+                  )}
+
+                  {filteredOptions.length === 0 && !isCustomOptionApplicable ? (
                     <div
                       style={{
                         padding: '36px 16px',

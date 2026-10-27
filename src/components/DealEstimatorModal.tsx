@@ -28,7 +28,14 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
   }, []);
 
   const [tons, setTons] = useState<number>(50);
-  // Purchase rate & selling rate are strictly per ton
+  // Pricing model: standard rate per ton (Coal, etc.) or Purity points based (Laterite, etc.)
+  const [pricingModel, setPricingModel] = useState<'standard' | 'purity'>('standard');
+  const [purityPercent, setPurityPercent] = useState<number>(48);
+  const [puritySellPointRate, setPuritySellPointRate] = useState<number>(210);
+  const [purityBuyMode, setPurityBuyMode] = useState<'point' | 'perTon'>('point');
+  const [purityBuyPointRate, setPurityBuyPointRate] = useState<number>(175);
+
+  // Purchase rate & selling rate are strictly per ton (or derived from purity)
   const [purchaseRate, setPurchaseRate] = useState<number>(18500);
   const [sellingRate, setSellingRate] = useState<number>(23000);
 
@@ -50,8 +57,17 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
   // Derived financial calculations
   const calc = useMemo(() => {
     const loadedTons = Math.max(0, Number(tons) || 0);
-    const buyRate = Math.max(0, Number(purchaseRate) || 0);
-    const sellRate = Math.max(0, Number(sellingRate) || 0);
+    let buyRate = Math.max(0, Number(purchaseRate) || 0);
+    let sellRate = Math.max(0, Number(sellingRate) || 0);
+
+    if (pricingModel === 'purity') {
+      const pPct = Math.max(0, Number(purityPercent) || 0);
+      sellRate = Math.round(pPct * (Number(puritySellPointRate) || 0));
+      if (purityBuyMode === 'point') {
+        buyRate = Math.round(pPct * (Number(purityBuyPointRate) || 0));
+      }
+    }
+
     const shortagePct = Math.max(0, Number(shortagePercent) || 0);
 
     // Freight calculations
@@ -118,7 +134,7 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
       marginPercent,
       breakevenRate,
     };
-  }, [tons, purchaseRate, sellingRate, freightMode, freightValue, miscMode, miscValue, shortagePercent]);
+  }, [tons, purchaseRate, sellingRate, freightMode, freightValue, miscMode, miscValue, shortagePercent, pricingModel, purityPercent, puritySellPointRate, purityBuyMode, purityBuyPointRate]);
 
   // Mode toggling helpers (preserves entered cost seamlessly)
   const handleFreightModeChange = (newMode: 'total' | 'perTon') => {
@@ -158,14 +174,20 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
   ];
 
   const dealSummaryText = `*DEAL ESTIMATE (Factory Ledger)*\n` +
+    (pricingModel === 'purity'
+      ? `• Commodity: Laterite / Purity-Based\n` +
+        `• Quality Purity: ${purityPercent}%\n` +
+        `• Factory Selling Rate: ${curSym} ${puritySellPointRate}/point (≈ ${curSym} ${formatAmountNumber(calc.sellRate, settings)}/ton)\n` +
+        `• Purchase Rate: ${purityBuyMode === 'point' ? `${curSym} ${purityBuyPointRate}/point (≈ ${curSym} ${formatAmountNumber(calc.buyRate, settings)}/ton)` : `${curSym} ${formatAmountNumber(calc.buyRate, settings)}/ton`}\n`
+      : `• Purchase Rate: ${curSym} ${formatAmountNumber(calc.buyRate, settings)}/ton\n` +
+        `• Factory Selling Rate: ${curSym} ${formatAmountNumber(calc.sellRate, settings)}/ton\n`
+    ) +
     `• Load Weight: ${calc.loadedTons.toFixed(2)} Tons\n` +
-    `• Purchase Rate: ${curSym} ${formatAmountNumber(calc.buyRate, settings)}/ton\n` +
     `• Freight: ${curSym} ${formatAmountNumber(calc.freightTotal, settings)} (${freightMode === 'total' ? `Flat Total, ≈ ${curSym} ${formatAmountNumber(calc.freightPerTon, settings)}/ton` : `${curSym} ${formatAmountNumber(calc.freightPerTon, settings)}/ton`})\n` +
     (calc.miscTotal > 0
       ? `• Misc/Kanta: ${curSym} ${formatAmountNumber(calc.miscTotal, settings)} (${miscMode === 'total' ? `Flat Total, ≈ ${curSym} ${formatAmountNumber(calc.miscPerTon, settings)}/ton` : `${curSym} ${formatAmountNumber(calc.miscPerTon, settings)}/ton`})\n`
       : '') +
     `• Total Cost: ${curSym} ${formatAmountNumber(calc.totalCost, settings)} (${curSym} ${formatAmountNumber(calc.costPerLoadedTon, settings)}/ton)\n` +
-    `• Factory Selling Rate: ${curSym} ${formatAmountNumber(calc.sellRate, settings)}/ton\n` +
     (calc.shortagePercent > 0
       ? `• Transit Loss: ${calc.shortagePercent}% (-${calc.shortageTons.toFixed(2)}t shortage, Billed: ${calc.billedTons.toFixed(2)}t)\n`
       : `• Transit Loss: 0% (Full ${calc.loadedTons.toFixed(2)}t Billed)\n`) +
@@ -343,6 +365,35 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
             </div>
           </div>
 
+          {/* ── Commodity / Pricing Model Toggle ── */}
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+              Pricing Method
+            </div>
+            <div className="ios-segmented">
+              <button
+                type="button"
+                className={`ios-segmented-item ${pricingModel === 'standard' ? 'active' : ''}`}
+                onClick={() => {
+                  playPopSound();
+                  setPricingModel('standard');
+                }}
+              >
+                Standard Rate (Per Ton)
+              </button>
+              <button
+                type="button"
+                className={`ios-segmented-item ${pricingModel === 'purity' ? 'active' : ''}`}
+                onClick={() => {
+                  playPopSound();
+                  setPricingModel('purity');
+                }}
+              >
+                Purity Points (Laterite)
+              </button>
+            </div>
+          </div>
+
           {/* ── Quick Truck Capacity Preset Chips ── */}
           <div>
             <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
@@ -409,31 +460,140 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
               </div>
             </div>
 
-            {/* 2. Purchase Rate (strictly Rs/ton) */}
-            <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--separator)' }}>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Purchase Rate</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Mine / source rate (per ton)</div>
+            {/* Purity % Input (Purity Model only) */}
+            {pricingModel === 'purity' && (
+              <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--separator)' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Quality Purity %</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Factory lab received purity</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <NumericInput
+                    value={purityPercent || ''}
+                    onChange={val => setPurityPercent(parseFloat(val) || 0)}
+                    style={{
+                      width: 90,
+                      textAlign: 'right',
+                      fontSize: 16,
+                      fontWeight: 600,
+                      padding: '6px 8px',
+                      borderRadius: 8,
+                      border: '1px solid var(--separator)',
+                      backgroundColor: 'var(--bg-grouped)',
+                      color: 'var(--text-main)',
+                    }}
+                  />
+                  <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-secondary)' }}>%</span>
+                </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <NumericInput
-                  value={purchaseRate || ''}
-                  onChange={val => setPurchaseRate(parseFloat(val) || 0)}
-                  style={{
-                    width: 100,
-                    textAlign: 'right',
-                    fontSize: 16,
-                    fontWeight: 600,
-                    padding: '6px 8px',
-                    borderRadius: 8,
-                    border: '1px solid var(--separator)',
-                    backgroundColor: 'var(--bg-grouped)',
-                    color: 'var(--text-main)',
-                  }}
-                />
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>{curSym}/ton</span>
+            )}
+
+            {/* 2. Purchase Rate (Dual-mode: Per Point or Per Ton) */}
+            {pricingModel === 'purity' ? (
+              <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--separator)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Purchase Rate</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                      {purityBuyMode === 'point' ? 'Supplier rate per purity point' : 'Flat rate per ton'}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ display: 'inline-flex', padding: 2, background: 'var(--bg-grouped)', borderRadius: 8, border: '1px solid var(--separator)' }}>
+                      <button
+                        type="button"
+                        onClick={() => { playPopSound(); setPurityBuyMode('point'); }}
+                        style={{
+                          padding: '3px 8px',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          borderRadius: 6,
+                          border: 'none',
+                          background: purityBuyMode === 'point' ? 'var(--ios-blue)' : 'transparent',
+                          color: purityBuyMode === 'point' ? '#ffffff' : 'var(--text-secondary)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Per Pt
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { playPopSound(); setPurityBuyMode('perTon'); }}
+                        style={{
+                          padding: '3px 8px',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          borderRadius: 6,
+                          border: 'none',
+                          background: purityBuyMode === 'perTon' ? 'var(--ios-blue)' : 'transparent',
+                          color: purityBuyMode === 'perTon' ? '#ffffff' : 'var(--text-secondary)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Per Ton
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <NumericInput
+                        value={purityBuyMode === 'point' ? (purityBuyPointRate || '') : (purchaseRate || '')}
+                        onChange={val => {
+                          const n = parseFloat(val) || 0;
+                          if (purityBuyMode === 'point') setPurityBuyPointRate(n);
+                          else setPurchaseRate(n);
+                        }}
+                        style={{
+                          width: 100,
+                          textAlign: 'right',
+                          fontSize: 16,
+                          fontWeight: 600,
+                          padding: '6px 8px',
+                          borderRadius: 8,
+                          border: '1px solid var(--separator)',
+                          backgroundColor: 'var(--bg-grouped)',
+                          color: 'var(--text-main)',
+                        }}
+                      />
+                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', minWidth: 38 }}>
+                        {purityBuyMode === 'point' ? `${curSym}/pt` : `${curSym}/t`}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                  <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                    {purityBuyMode === 'point'
+                      ? `≈ ${curSym} ${formatAmountNumber(calc.buyRate, settings)}/ton (${purityBuyPointRate} × ${purityPercent}%)`
+                      : `≈ ${curSym} ${formatAmountNumber(calc.buyRate, settings)}/ton`}
+                  </span>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--separator)' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 500, color: 'var(--text-main)' }}>Purchase Rate</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Mine / source rate (per ton)</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <NumericInput
+                    value={purchaseRate || ''}
+                    onChange={val => setPurchaseRate(parseFloat(val) || 0)}
+                    style={{
+                      width: 100,
+                      textAlign: 'right',
+                      fontSize: 16,
+                      fontWeight: 600,
+                      padding: '6px 8px',
+                      borderRadius: 8,
+                      border: '1px solid var(--separator)',
+                      backgroundColor: 'var(--bg-grouped)',
+                      color: 'var(--text-main)',
+                    }}
+                  />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)' }}>{curSym}/ton</span>
+                </div>
+              </div>
+            )}
 
             {/* 3. Freight / Transport (Toggle: Total Rs vs Per Ton) */}
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--separator)' }}>
@@ -593,31 +753,65 @@ function DealEstimatorContent({ onClose }: { onClose: () => void }) {
               </div>
             </div>
 
-            {/* 5. Factory Selling Rate (strictly curSym/ton) */}
-            <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--separator)' }}>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ios-blue)' }}>Factory Selling Rate</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Mill contract rate (per ton)</div>
+            {/* 5. Factory Selling Rate (strictly curSym/ton or per purity point) */}
+            {pricingModel === 'purity' ? (
+              <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--separator)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ios-blue)' }}>Factory Rate / Point</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Contract rate per purity point</div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <NumericInput
+                      value={puritySellPointRate || ''}
+                      onChange={val => setPuritySellPointRate(parseFloat(val) || 0)}
+                      style={{
+                        width: 100,
+                        textAlign: 'right',
+                        fontSize: 16,
+                        fontWeight: 700,
+                        padding: '6px 8px',
+                        borderRadius: 8,
+                        border: '1px solid var(--ios-blue)',
+                        backgroundColor: 'var(--bg-grouped)',
+                        color: 'var(--ios-blue)',
+                      }}
+                    />
+                    <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ios-blue)' }}>{curSym}/pt</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--ios-blue)' }}>
+                    ≈ {curSym} {formatAmountNumber(calc.sellRate, settings)}/ton ({puritySellPointRate} × {purityPercent}%)
+                  </span>
+                </div>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <NumericInput
-                  value={sellingRate || ''}
-                  onChange={val => setSellingRate(parseFloat(val) || 0)}
-                  style={{
-                    width: 100,
-                    textAlign: 'right',
-                    fontSize: 16,
-                    fontWeight: 700,
-                    padding: '6px 8px',
-                    borderRadius: 8,
-                    border: '1px solid var(--ios-blue)',
-                    backgroundColor: 'var(--bg-grouped)',
-                    color: 'var(--ios-blue)',
-                  }}
-                />
-                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ios-blue)' }}>{curSym}/ton</span>
+            ) : (
+              <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--separator)' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--ios-blue)' }}>Factory Selling Rate</div>
+                  <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Mill contract rate (per ton)</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <NumericInput
+                    value={sellingRate || ''}
+                    onChange={val => setSellingRate(parseFloat(val) || 0)}
+                    style={{
+                      width: 100,
+                      textAlign: 'right',
+                      fontSize: 16,
+                      fontWeight: 700,
+                      padding: '6px 8px',
+                      borderRadius: 8,
+                      border: '1px solid var(--ios-blue)',
+                      backgroundColor: 'var(--bg-grouped)',
+                      color: 'var(--ios-blue)',
+                    }}
+                  />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ios-blue)' }}>{curSym}/ton</span>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* 6. Transit Loss (Weighbridge Shortage) */}
             <div style={{ padding: '12px 16px' }}>

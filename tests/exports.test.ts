@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { Dispatch, Party, Payment, AppSettings } from '../src/types';
+import type { Dispatch, Party, Payment, AppSettings, InventoryLot } from '../src/types';
 import {
   calculateSettlement,
   calculateLedgerTotals,
@@ -9,6 +9,7 @@ import {
 import {
   buildPartyStatementData,
   buildFleetExportData,
+  generateSupplierDeliveryWhatsappText,
 } from '../src/utils/exportSharing';
 import syntheticScenariosFixture from './fixtures/synthetic-scenarios.json';
 
@@ -272,5 +273,46 @@ describe('Issue 25 (T13): Synthetic Settlement Scenario Regression', () => {
         expect(totals.profit).toBe((slip.paper as any).aggregateProfit);
       }
     });
+  });
+});
+
+describe('Supplier Delivery WhatsApp Voucher Export', () => {
+  it('formats clean WhatsApp text with supplier, truck, weight, purchase rate, fare, and landed cost', () => {
+    const lot: InventoryLot = {
+      id: 'lot-123',
+      supplierId: 'supp-1',
+      supplier: 'Quetta Mines Ltd',
+      date: '2026-10-23',
+      truckNumber: 'TK-9921',
+      mineName: 'Chamalang Pit 4',
+      storedAt: 'Yard 2',
+      billedWeight: 28.5,
+      receivedWeight: 28.5,
+      purchaseRate: 21000,
+      freightCost: 45000,
+      totalValue: 28.5 * 21000 + 45000,
+      landedRate: (28.5 * 21000 + 45000) / 28.5,
+      notes: 'High grade lump coal',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const text = generateSupplierDeliveryWhatsappText(lot, {
+      id: 'supp-1',
+      name: 'Quetta Mines Ltd',
+      type: 'supplier',
+      contactPerson: 'Haji Sahib',
+      phone: '03001234567',
+      address: 'Quetta',
+      createdAt: Date.now(),
+    }, mockSettings);
+
+    expect(text).toContain('GOODS RECEIVED NOTE');
+    expect(text).toContain('Quetta Mines Ltd');
+    expect(text).toContain('TK-9921');
+    expect(text).toContain('28.50 Tons');
+    expect(text).toContain('Chamalang Pit 4');
+    expect(text).toContain('Yard 2');
+    expect(text).toContain('High grade lump coal');
   });
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending, getEffectiveAdjustments, buildDispatchSlipRows } from '../src/utils/calculations';
 import { buildFleetExportData } from '../src/utils/exportSharing';
-import type { Dispatch, Payment } from '../src/types';
+import type { Dispatch, Payment, Party, InventoryLot } from '../src/types';
 
 describe('T1: Settlement and Financial Calculations Golden Values', () => {
   it('matches hand-calculated golden settlement values with 18% sales tax and 5% income tax formula', () => {
@@ -455,6 +455,216 @@ describe('Issue 37: Pro-Rata Quality Adjustments Transparency (T30 & T31)', () =
     const exportData = buildFleetExportData([manualDispatch]);
     expect(exportData.rows[0].deduction).toBe(500);
     expect(exportData.rows[0].premium).toBe(250);
+  });
+});
+
+describe('Supplier vs Buyer Logic and Balance Calculations', () => {
+  it('correctly calculates buyer party balance (party owes user for coal sales)', () => {
+    const buyerParty: Party = {
+      id: 'buyer-1',
+      name: 'Bestway Cement',
+      type: 'buyer',
+      contactPerson: 'Manager',
+      phone: '0300-1111111',
+      address: 'Islamabad',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const dispatch: Dispatch = {
+      id: 'disp-b1',
+      date: '2026-10-10',
+      partyId: 'buyer-1',
+      truckNumber: 'TK-9901',
+      factoryName: 'Bestway Cement',
+      baseRate: 32000,
+      labReceivedWeight: 20,
+      taxMethod: 'manual',
+      manualTax: 0,
+      manualDeduction: 0,
+      manualPremium: 0,
+      commissionPerTon: 0,
+      targetGcv: 6000,
+      labActualGcv: 6000,
+      labSulphur: 1,
+      coalInputs: [],
+      overheads: { loading: 0, freight: 0, crush: 0, royalty: 0, other: 0 },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const payments: Payment[] = [
+      {
+        id: 'pay-b1',
+        partyId: 'buyer-1',
+        amount: 400000,
+        type: 'received',
+        date: '2026-10-11',
+        mode: 'bank',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const result = calculatePartyBalance([dispatch], payments, buyerParty);
+
+    // Total billed: 20t * 32,000 = 640,000
+    expect(result.totalBilled).toBe(640000);
+    expect(result.totalPaymentsReceived).toBe(400000);
+    expect(result.outstandingBalance).toBe(240000); // 640,000 - 400,000 = 240,000 due
+    expect(result.isReceivable).toBe(true);
+    expect(result.isPayable).toBe(false);
+    expect(result.isAdvance).toBe(false);
+    expect(result.partyType).toBe('buyer');
+  });
+
+  it('correctly calculates supplier party balance (user owes supplier for inward stock purchases)', () => {
+    const supplierParty: Party = {
+      id: 'supp-1',
+      name: 'Duki Coal Mine',
+      type: 'supplier',
+      contactPerson: 'Owner',
+      phone: '0300-2222222',
+      address: 'Duki',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const lots: InventoryLot[] = [
+      {
+        id: 'lot-1',
+        date: '2026-10-10',
+        supplierId: 'supp-1',
+        supplier: 'Duki Coal Mine',
+        mineSource: 'Pit 4',
+        billedWeight: 25,
+        receivedWeight: 25,
+        purchaseRate: 22000,
+        freightCost: 50000,
+        totalValue: 25 * 22000 + 50000, // 550,000 + 50,000 = 600,000
+        landedRate: 24000,
+        storedAt: 'Main Coal Yard',
+        truckNumber: 'TK-DUKI-01',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      {
+        id: 'lot-2',
+        date: '2026-10-11',
+        supplierId: 'supp-1',
+        supplier: 'Duki Coal Mine',
+        mineSource: 'Pit 2',
+        billedWeight: 15,
+        receivedWeight: 15,
+        purchaseRate: 20000,
+        freightCost: 30000,
+        totalValue: 15 * 20000 + 30000, // 300,000 + 30,000 = 330,000
+        landedRate: 22000,
+        storedAt: 'Main Coal Yard',
+        truckNumber: 'TK-DUKI-02',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    ];
+
+    // Payments to supplier: 500,000 paid out, 20,000 refund received
+    const payments: Payment[] = [
+      {
+        id: 'pay-s1',
+        partyId: 'supp-1',
+        supplierId: 'supp-1',
+        amount: 500000,
+        type: 'paid',
+        date: '2026-10-11',
+        mode: 'bank',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+      {
+        id: 'pay-s2',
+        partyId: 'supp-1',
+        supplierId: 'supp-1',
+        amount: 20000,
+        type: 'received',
+        date: '2026-10-12',
+        mode: 'cash',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const result = calculatePartyBalance([], payments, supplierParty, lots);
+
+    // Total inward purchases: 600,000 + 330,000 = 930,000
+    expect(result.totalPurchases).toBe(930000);
+    expect(result.totalBilled).toBe(930000);
+    expect(result.dispatchesCount).toBe(2);
+    expect(result.totalTons).toBe(40); // 25 + 15
+    expect(result.totalPaymentsPaid).toBe(500000);
+    expect(result.totalPaymentsReceived).toBe(20000);
+    expect(result.netPaymentsPaid).toBe(480000); // 500k - 20k
+
+    // Outstanding payable: 930,000 - 480,000 = 450,000
+    expect(result.outstandingBalance).toBe(450000);
+    expect(result.isPayable).toBe(true);
+    expect(result.isReceivable).toBe(false);
+    expect(result.isAdvance).toBe(false);
+    expect(result.partyType).toBe('supplier');
+  });
+
+  it('correctly detects advance paid to supplier when payments exceed inward stock', () => {
+    const supplierParty: Party = {
+      id: 'supp-adv',
+      name: 'Chamalang Colliery',
+      type: 'supplier',
+      contactPerson: 'Manager',
+      phone: '0300-3333333',
+      address: 'Chamalang',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const lots: InventoryLot[] = [
+      {
+        id: 'lot-adv-1',
+        date: '2026-10-12',
+        supplierId: 'supp-adv',
+        supplier: 'Chamalang Colliery',
+        billedWeight: 10,
+        receivedWeight: 10,
+        purchaseRate: 20000,
+        freightCost: 0,
+        totalValue: 200000,
+        landedRate: 20000,
+        storedAt: 'Yard A',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const payments: Payment[] = [
+      {
+        id: 'pay-adv-1',
+        partyId: 'supp-adv',
+        supplierId: 'supp-adv',
+        amount: 300000,
+        type: 'paid',
+        date: '2026-10-12',
+        mode: 'bank',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      },
+    ];
+
+    const result = calculatePartyBalance([], payments, supplierParty, lots);
+
+    // 200,000 inward - 300,000 paid = -100,000 (advance paid)
+    expect(result.totalPurchases).toBe(200000);
+    expect(result.totalPaymentsPaid).toBe(300000);
+    expect(result.outstandingBalance).toBe(-100000);
+    expect(result.isAdvance).toBe(true);
+    expect(result.isPayable).toBe(false);
+    expect(result.partyType).toBe('supplier');
   });
 });
 

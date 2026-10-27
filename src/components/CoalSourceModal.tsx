@@ -1,9 +1,10 @@
 import { useState, useMemo, useCallback } from 'react';
-import type { Mine, InventoryLot, Dispatch, AppSettings } from '../types';
+import type { Mine, InventoryLot, Dispatch, AppSettings, SupplierProfile } from '../types';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
 import { formatDisplayDate } from '../utils/dateUtils';
-import { calculateMineStock, calculateLotStock } from '../utils/calculations';
+import { calculateMineStock, calculateSupplierStock, calculateLotStock } from '../utils/calculations';
 import { playPopSound } from '../utils/delight';
+import { COAL_ITEM_ID, getMaterialBadgeTheme } from '../utils/materials';
 import {
   Search,
   X,
@@ -15,10 +16,12 @@ import {
   ArrowRight,
   Layers,
   Lock,
+  Building2,
 } from 'lucide-react';
 
 export interface CoalSourceSelection {
   mineId?: string;
+  supplierId?: string;
   lotId?: string;
   sourceName: string;
   weight: number;
@@ -29,10 +32,14 @@ interface CoalSourceModalProps {
   isOpen: boolean;
   onClose: () => void;
   mines: Mine[];
+  suppliers?: SupplierProfile[];
   lots: InventoryLot[];
   dispatches: Dispatch[];
   settings?: AppSettings;
+  materialId?: string;
+  materialName?: string;
   currentMineId?: string;
+  currentSupplierId?: string;
   currentLotId?: string;
   currentDispatchId?: string;
   excludeLotIds?: string[];
@@ -45,10 +52,14 @@ export default function CoalSourceModal({
   isOpen,
   onClose,
   mines,
+  suppliers = [],
   lots,
   dispatches,
   settings,
+  materialId = COAL_ITEM_ID,
+  materialName = 'Coal',
   currentMineId,
+  currentSupplierId,
   currentLotId,
   currentDispatchId,
   excludeLotIds,
@@ -57,23 +68,18 @@ export default function CoalSourceModal({
   onManageMines,
 }: CoalSourceModalProps) {
   const [searchQuery, setSearchQuery] = useState('');
-  const [expandedMineIds, setExpandedMineIds] = useState<Record<string, boolean>>(() => {
-    // By default expand all mines so lots are immediately visible
-    const initial: Record<string, boolean> = {};
-    mines.forEach((m) => {
-      initial[m.id] = true;
-    });
-    return initial;
-  });
-  const [expandedUsedMines, setExpandedUsedMines] = useState<Record<string, boolean>>({});
+  const [expandedSourceIds, setExpandedSourceIds] = useState<Record<string, boolean>>({});
+  const [expandedUsedSources, setExpandedUsedSources] = useState<Record<string, boolean>>({});
 
   const curSym = getCurrencySymbol(settings?.currency);
+  const isCoal = !materialId || materialId === COAL_ITEM_ID;
+  const theme = getMaterialBadgeTheme(materialId);
 
-  const toggleExpand = (mineId: string) => {
+  const toggleExpand = (sourceKey: string) => {
     playPopSound();
-    setExpandedMineIds((prev) => ({
+    setExpandedSourceIds((prev) => ({
       ...prev,
-      [mineId]: !(prev[mineId] ?? true),
+      [sourceKey]: !(prev[sourceKey] ?? true),
     }));
   };
 
@@ -89,7 +95,7 @@ export default function CoalSourceModal({
     // If this lot is currently selected in THIS input field, keep it available
     if (currentLotId && lot.id === currentLotId) return true;
 
-    // If lot was already picked by another coal input in the current form
+    // If lot was already picked by another source input in the current form
     if (excludeLotIds && excludeLotIds.includes(lot.id)) {
       return false;
     }
@@ -103,14 +109,28 @@ export default function CoalSourceModal({
     return true;
   }, [currentLotId, excludeLotIds, otherDispatches]);
 
-  // Group available and used lots by mineId
-  const { availableLotsByMineId, usedLotsByMineId } = useMemo(() => {
+  // Filter lots by current material
+  const materialLots = useMemo(() => {
+    return lots.filter((lot) => {
+      if (lot.deleted) return false;
+      const lotMat = lot.itemId || COAL_ITEM_ID;
+      return lotMat === materialId;
+    });
+  }, [lots, materialId]);
+
+  // Group available and used lots by source key (mine or supplier)
+  const { availableLotsBySourceKey, usedLotsBySourceKey } = useMemo(() => {
     const availMap = new Map<string, InventoryLot[]>();
     const usedMap = new Map<string, InventoryLot[]>();
 
-    for (const lot of lots) {
-      if (lot.deleted) continue;
-      const key = lot.mineId || 'unassigned';
+    for (const lot of materialLots) {
+      const key = lot.mineId
+        ? `mine_${lot.mineId}`
+        : lot.supplierId
+          ? `supp_${lot.supplierId}`
+          : lot.supplier
+            ? `suppname_${lot.supplier.trim().toLowerCase()}`
+            : 'unassigned';
 
       if (isLotAvailable(lot)) {
         const existing = availMap.get(key) || [];
@@ -122,18 +142,20 @@ export default function CoalSourceModal({
         usedMap.set(key, existing);
       }
     }
-    return { availableLotsByMineId: availMap, usedLotsByMineId: usedMap };
-  }, [lots, isLotAvailable]);
+    return { availableLotsBySourceKey: availMap, usedLotsBySourceKey: usedMap };
+  }, [materialLots, isLotAvailable]);
 
-  // Filtered mines based on search
+  // Filtered mines (for Coal)
   const filteredMines = useMemo(() => {
+    if (!isCoal) return [];
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return mines;
+    const activeMines = mines.filter((m) => !m.deleted);
+    if (!q) return activeMines;
 
-    return mines.filter((m) => {
+    return activeMines.filter((m) => {
       if (m.name.toLowerCase().includes(q)) return true;
       if (m.location && m.location.toLowerCase().includes(q)) return true;
-      const mineLots = availableLotsByMineId.get(m.id) || [];
+      const mineLots = availableLotsBySourceKey.get(`mine_${m.id}`) || [];
       return mineLots.some(
         (l) =>
           (l.boughtFrom && l.boughtFrom.toLowerCase().includes(q)) ||
@@ -141,7 +163,31 @@ export default function CoalSourceModal({
           (l.storedAt && l.storedAt.toLowerCase().includes(q))
       );
     });
-  }, [mines, availableLotsByMineId, searchQuery]);
+  }, [isCoal, mines, availableLotsBySourceKey, searchQuery]);
+
+  // Filtered suppliers (for non-coal or coal suppliers)
+  const filteredSuppliers = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    const activeSuppliers = suppliers.filter((s) => !s.isArchived);
+    const relevant = isCoal
+      ? activeSuppliers.filter((s) => s.materialIds?.includes(COAL_ITEM_ID))
+      : activeSuppliers.filter((s) => !s.materialIds?.length || s.materialIds.includes(materialId));
+
+    if (!q) return relevant;
+
+    return relevant.filter((s) => {
+      if (s.name.toLowerCase().includes(q)) return true;
+      if (s.contactPerson && s.contactPerson.toLowerCase().includes(q)) return true;
+      if (s.phone && s.phone.toLowerCase().includes(q)) return true;
+      const suppLots = availableLotsBySourceKey.get(`supp_${s.id}`) || [];
+      return suppLots.some(
+        (l) =>
+          (l.boughtFrom && l.boughtFrom.toLowerCase().includes(q)) ||
+          (l.supplier && l.supplier.toLowerCase().includes(q)) ||
+          (l.storedAt && l.storedAt.toLowerCase().includes(q))
+      );
+    });
+  }, [isCoal, suppliers, materialId, availableLotsBySourceKey, searchQuery]);
 
   if (!isOpen) return null;
 
@@ -210,9 +256,11 @@ export default function CoalSourceModal({
             Cancel
           </button>
 
-          <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)' }}>
-            Select Coal Mine & Stock
-          </span>
+          <div style={{ textAlign: 'center' }}>
+            <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)' }}>
+              Select {materialName} Source
+            </span>
+          </div>
 
           <button
             type="button"
@@ -252,7 +300,7 @@ export default function CoalSourceModal({
             <Search size={16} style={{ color: 'var(--label-tertiary)' }} />
             <input
               type="text"
-              placeholder="Search mines or stock entries…"
+              placeholder={`Search ${isCoal ? 'mines' : 'suppliers'} or stock batches…`}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="ios-search-input"
@@ -295,8 +343,8 @@ export default function CoalSourceModal({
             style={{
               padding: '12px 16px',
               borderRadius: 14,
-              background: !currentMineId && !currentLotId ? 'rgba(0, 122, 255, 0.12)' : 'var(--fill-quaternary, rgba(120,120,128,0.08))',
-              border: !currentMineId && !currentLotId ? '1.5px solid var(--ios-blue)' : '0.5px solid var(--separator)',
+              background: !currentMineId && !currentSupplierId && !currentLotId ? 'rgba(0, 122, 255, 0.12)' : 'var(--fill-quaternary, rgba(120,120,128,0.08))',
+              border: !currentMineId && !currentSupplierId && !currentLotId ? '1.5px solid var(--ios-blue)' : '0.5px solid var(--separator)',
               marginBottom: 14,
               cursor: 'pointer',
               display: 'flex',
@@ -314,341 +362,591 @@ export default function CoalSourceModal({
                 Enter custom source name, tonnage & price manually
               </div>
             </div>
-            {!currentMineId && !currentLotId && (
+            {!currentMineId && !currentSupplierId && !currentLotId && (
               <Check size={18} style={{ color: 'var(--ios-blue)' }} strokeWidth={2.5} />
             )}
           </div>
 
-          {/* Mines Sections */}
-          {filteredMines.length === 0 ? (
-            <div style={{ padding: '36px 16px', textAlign: 'center', color: 'var(--label-secondary)' }}>
-              <Layers size={40} style={{ opacity: 0.35, margin: '0 auto 8px' }} />
-              <div style={{ fontSize: 15, fontWeight: 600 }}>No Mines Found</div>
-              <div style={{ fontSize: 12, color: 'var(--label-tertiary)', marginTop: 4 }}>
-                {searchQuery ? `No results for "${searchQuery}"` : 'Add mines in Inventory to see them here.'}
-              </div>
-            </div>
-          ) : (
-            filteredMines.map((mine) => {
-              const mineLots = availableLotsByMineId.get(mine.id) || [];
-              const usedLots = usedLotsByMineId.get(mine.id) || [];
-              const isExpanded = expandedMineIds[mine.id] ?? true;
-              const stock = calculateMineStock(mine, lots, otherDispatches);
-
-              return (
-                <div
-                  key={mine.id}
-                  style={{
-                    background: 'var(--bg-card)',
-                    borderRadius: 16,
-                    border: '0.5px solid var(--separator)',
-                    boxShadow: 'var(--shadow-card)',
-                    marginBottom: 14,
-                    overflow: 'hidden',
-                  }}
-                >
-                  {/* Mine Section Header */}
-                  <div
-                    style={{
-                      padding: '12px 14px',
-                      background: 'var(--fill-tertiary)',
-                      borderBottom: isExpanded ? '0.5px solid var(--separator)' : 'none',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      gap: 8,
-                    }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          width: 36,
-                          height: 36,
-                          borderRadius: 10,
-                          background: 'rgba(0, 122, 255, 0.12)',
-                          color: 'var(--ios-blue)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          flexShrink: 0,
-                        }}
-                      >
-                        <Package size={18} />
-                      </div>
-
-                      <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                            {mine.name}
-                          </span>
-                        </div>
-                        <div style={{ fontSize: 12, color: 'var(--label-secondary)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 1 }}>
-                          <span>Rate: <strong>{curSym} {formatAmountNumber(mine.ratePerTon)}/t</strong></span>
-                          <span>·</span>
-                          <span style={{ color: stock.isOverdrawn ? 'var(--ios-red)' : 'var(--label-secondary)' }}>
-                            {stock.remainingTons.toFixed(1)}t available
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      {/* Expand / Collapse toggle */}
-                      <button
-                        type="button"
-                        onClick={() => toggleExpand(mine.id)}
-                        style={{
-                          width: 32,
-                          height: 32,
-                          borderRadius: 8,
-                          background: 'none',
-                          border: 'none',
-                          color: 'var(--label-tertiary)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          cursor: 'pointer',
-                        }}
-                        title={isExpanded ? 'Collapse stock entries' : 'Expand stock entries'}
-                      >
-                        {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-                      </button>
-                    </div>
+          {/* Non-Coal: Suppliers Section */}
+          {!isCoal && (
+            <div>
+              {filteredSuppliers.length === 0 ? (
+                <div style={{ padding: '36px 16px', textAlign: 'center', color: 'var(--label-secondary)' }}>
+                  <Building2 size={40} style={{ opacity: 0.35, margin: '0 auto 8px' }} />
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>No {materialName} Suppliers Found</div>
+                  <div style={{ fontSize: 12, color: 'var(--label-tertiary)', marginTop: 4 }}>
+                    {searchQuery ? `No results for "${searchQuery}"` : `Add ${materialName} suppliers in Inventory or Settings.`}
                   </div>
+                </div>
+              ) : (
+                filteredSuppliers.map((supplier) => {
+                  const sourceKey = `supp_${supplier.id}`;
+                  const suppLots = availableLotsBySourceKey.get(sourceKey) || [];
+                  const usedLots = usedLotsBySourceKey.get(sourceKey) || [];
+                  const isExpanded = expandedSourceIds[sourceKey] ?? true;
+                  const stock = calculateSupplierStock(supplier, materialLots, otherDispatches);
+                  const isSelectedDirect = currentSupplierId === supplier.id && !currentLotId;
 
-                  {/* Stock entries list under this mine */}
-                  {isExpanded && (
-                    <div style={{ padding: '6px 10px 10px' }}>
+                  return (
+                    <div
+                      key={supplier.id}
+                      style={{
+                        background: 'var(--bg-card)',
+                        borderRadius: 16,
+                        border: '0.5px solid var(--separator)',
+                        boxShadow: 'var(--shadow-card)',
+                        marginBottom: 14,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {/* Supplier Section Header */}
                       <div
                         style={{
-                          fontSize: 11,
-                          fontWeight: 700,
-                          color: 'var(--label-secondary)',
-                          textTransform: 'uppercase',
-                          padding: '6px 8px 4px',
-                          letterSpacing: 0.3,
+                          padding: '12px 14px',
+                          background: 'var(--fill-tertiary)',
+                          borderBottom: isExpanded ? '0.5px solid var(--separator)' : 'none',
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'space-between',
+                          gap: 8,
                         }}
                       >
-                        <span>Stock With Balance ({mineLots.length})</span>
-                        {usedLots.length > 0 && (
-                          <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--label-tertiary)', textTransform: 'none' }}>
-                            {usedLots.length} fully allocated
-                          </span>
-                        )}
-                      </div>
-
-                      {mineLots.length === 0 ? (
-                        <div style={{ padding: '12px 8px', fontSize: 13, color: 'var(--label-tertiary)', fontStyle: 'italic' }}>
-                          {usedLots.length > 0
-                            ? `All stock entries for this mine (${usedLots.length}) are fully allocated to dispatches.`
-                            : 'No stock entries recorded in this mine yet. Add stock in Inventory first, or use Manual / Custom Source.'}
-                        </div>
-                      ) : (
-                        mineLots.map((lot) => {
-                          const isSelectedLot = currentLotId === lot.id;
-                          const stock = calculateLotStock(lot, otherDispatches);
-                          const availableWeight = Math.max(0, stock.remainingWeight);
-                          const lotRate = lot.landedRate || lot.purchaseRate || lot.ratePerTon || mine.ratePerTon;
-                          const isPartiallyUsed = stock.usedWeight > 0.001 && availableWeight > 0.001;
-
-                          return (
-                            <div
-                              key={lot.id}
-                              onClick={() => {
-                                playPopSound();
-                                onClose();
-                                onSelect({
-                                  mineId: mine.id,
-                                  lotId: lot.id,
-                                  sourceName: `${mine.name} - ${lot.boughtFrom || lot.supplier}`,
-                                  weight: availableWeight,
-                                  rate: lotRate,
-                                });
-                              }}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                padding: '10px 12px',
-                                borderRadius: 12,
-                                background: isSelectedLot ? 'rgba(0, 122, 255, 0.12)' : 'var(--fill-quaternary, rgba(120,120,128,0.06))',
-                                border: isSelectedLot ? '1.5px solid var(--ios-blue)' : '0.5px solid var(--separator)',
-                                marginTop: 6,
-                                cursor: 'pointer',
-                                transition: 'all 0.15s ease',
-                              }}
-                              className="hover-bg"
-                            >
-                              <div style={{ minWidth: 0, flex: 1 }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                                  <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)' }}>
-                                    {lot.boughtFrom || lot.supplier || 'Stock Batch'}
-                                  </span>
-
-                                  {isSelectedLot ? (
-                                    <span
-                                      style={{
-                                        fontSize: 10,
-                                        fontWeight: 700,
-                                        padding: '2px 6px',
-                                        borderRadius: 6,
-                                        background: 'rgba(0, 122, 255, 0.15)',
-                                        color: 'var(--ios-blue)',
-                                      }}
-                                    >
-                                      Selected in this Dispatch
-                                    </span>
-                                  ) : (
-                                    <span
-                                      style={{
-                                        fontSize: 10,
-                                        fontWeight: 700,
-                                        padding: '2px 6px',
-                                        borderRadius: 6,
-                                        background: isPartiallyUsed ? 'rgba(255, 149, 0, 0.15)' : 'rgba(52, 199, 89, 0.15)',
-                                        color: isPartiallyUsed ? 'var(--ios-orange)' : 'var(--ios-green)',
-                                      }}
-                                    >
-                                      {isPartiallyUsed ? 'Partially Used' : 'Available'}
-                                    </span>
-                                  )}
-                                </div>
-
-                                <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 2, display: 'flex', gap: 6 }}>
-                                  <span>{formatDisplayDate(lot.date)}</span>
-                                  <span>·</span>
-                                  <span>Stored: {lot.storedAt || mine.location || 'Yard'}</span>
-                                </div>
-                              </div>
-
-                              <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-                                <div>
-                                  <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">
-                                    {availableWeight.toFixed(2)}t available
-                                  </div>
-                                  <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ios-blue)' }} className="tabular-nums">
-                                    {curSym} {formatAmountNumber(lotRate, settings)}/t
-                                  </div>
-                                </div>
-
-                                {isSelectedLot ? (
-                                  <Check size={18} style={{ color: 'var(--ios-blue)' }} strokeWidth={2.5} />
-                                ) : (
-                                  <ArrowRight size={15} style={{ color: 'var(--label-tertiary)' }} />
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })
-                      )}
-
-                      {/* Optional expandable view for fully allocated entries */}
-                      {usedLots.length > 0 && (
-                        <div style={{ marginTop: 8 }}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              playPopSound();
-                              setExpandedUsedMines((prev) => ({
-                                ...prev,
-                                [mine.id]: !prev[mine.id],
-                              }));
-                            }}
+                        <div
+                          style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, cursor: 'pointer' }}
+                          onClick={() => {
+                            playPopSound();
+                            onClose();
+                            onSelect({
+                              supplierId: supplier.id,
+                              sourceName: supplier.name,
+                              weight: stock.remainingTons > 0 ? stock.remainingTons : 0,
+                              rate: 0,
+                            });
+                          }}
+                        >
+                          <div
                             style={{
-                              background: 'none',
-                              border: 'none',
-                              padding: '6px 8px',
-                              fontSize: 11,
-                              fontWeight: 600,
-                              color: 'var(--label-tertiary)',
-                              cursor: 'pointer',
-                              display: 'inline-flex',
+                              width: 36,
+                              height: 36,
+                              borderRadius: 10,
+                              background: theme.bg,
+                              color: theme.color,
+                              display: 'flex',
                               alignItems: 'center',
-                              gap: 4,
+                              justifyContent: 'center',
+                              flexShrink: 0,
                             }}
                           >
-                            <Lock size={11} />
-                            <span>
-                              {expandedUsedMines[mine.id]
-                                ? `Hide ${usedLots.length} fully allocated entries`
-                                : `View ${usedLots.length} fully allocated entries`}
-                            </span>
+                            <Building2 size={18} />
+                          </div>
+
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {supplier.name}
+                              </span>
+                              {isSelectedDirect && (
+                                <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 6, background: theme.bg, color: theme.color }}>
+                                  Direct Supplier
+                                </span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: 12, color: 'var(--label-secondary)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 1 }}>
+                              <span style={{ color: stock.isOverdrawn ? 'var(--ios-red)' : 'var(--label-secondary)' }}>
+                                {stock.remainingTons.toFixed(1)}t in yard
+                              </span>
+                              {supplier.phone && (
+                                <>
+                                  <span>·</span>
+                                  <span>{supplier.phone}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <button
+                            type="button"
+                            onClick={() => toggleExpand(sourceKey)}
+                            style={{
+                              width: 32,
+                              height: 32,
+                              borderRadius: 8,
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--label-tertiary)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                            }}
+                            title={isExpanded ? 'Collapse stock entries' : 'Expand stock entries'}
+                          >
+                            {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
                           </button>
+                        </div>
+                      </div>
 
-                          {expandedUsedMines[mine.id] && (
-                            <div style={{ marginTop: 4, opacity: 0.6 }}>
-                              {usedLots.map((lot) => {
-                                const billed = lot.billedWeight || lot.tonnage || 0;
-                                const received = lot.receivedWeight || billed;
-                                const effectiveWeight = received > 0 ? received : billed;
-                                const usedByDispatches = otherDispatches.filter((dispatch) =>
-                                  (dispatch.coalInputs || []).some((input) => input.lotId === lot.id)
-                                );
+                      {/* Stock batches under this supplier */}
+                      {isExpanded && (
+                        <div style={{ padding: '6px 10px 10px' }}>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 700,
+                              color: 'var(--label-secondary)',
+                              textTransform: 'uppercase',
+                              padding: '6px 8px 4px',
+                              letterSpacing: 0.3,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                            }}
+                          >
+                            <span>Yard Stock Batches ({suppLots.length})</span>
+                            {usedLots.length > 0 && (
+                              <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--label-tertiary)', textTransform: 'none' }}>
+                                {usedLots.length} fully allocated
+                              </span>
+                            )}
+                          </div>
 
-                                return (
-                                  <div
-                                    key={lot.id}
-                                    style={{
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'space-between',
-                                      padding: '8px 10px',
-                                      borderRadius: 10,
-                                      background: 'var(--fill-quaternary)',
-                                      border: '0.5px dashed var(--separator)',
-                                      marginTop: 4,
-                                      cursor: 'not-allowed',
-                                    }}
-                                    title="This stock entry has no remaining balance"
-                                  >
-                                    <div style={{ minWidth: 0, flex: 1 }}>
-                                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)' }}>
-                                          {lot.boughtFrom || lot.supplier || 'Stock Batch'}
-                                        </span>
+                          {suppLots.length === 0 ? (
+                            <div style={{ padding: '12px 8px', fontSize: 13, color: 'var(--label-tertiary)', fontStyle: 'italic' }}>
+                              {usedLots.length > 0
+                                ? `All stock entries for this supplier (${usedLots.length}) are fully allocated to dispatches.`
+                                : `No yard batches for this supplier yet. Tap the supplier header for direct delivery, or add stock in Inventory.`}
+                            </div>
+                          ) : (
+                            suppLots.map((lot) => {
+                              const isSelectedLot = currentLotId === lot.id;
+                              const stock = calculateLotStock(lot, otherDispatches);
+                              const availableWeight = Math.max(0, stock.remainingWeight);
+                              const lotRate = lot.landedRate || lot.purchaseRate || lot.ratePerTon || 0;
+                              const isPartiallyUsed = stock.usedWeight > 0.001 && availableWeight > 0.001;
+
+                              return (
+                                <div
+                                  key={lot.id}
+                                  onClick={() => {
+                                    playPopSound();
+                                    onClose();
+                                    onSelect({
+                                      mineId: lot.mineId,
+                                      supplierId: supplier.id,
+                                      lotId: lot.id,
+                                      sourceName: `${supplier.name} - ${lot.truckNumber || lot.boughtFrom || lot.supplier || 'Batch'}${lot.mineName ? ` (${lot.mineName})` : ''}`,
+                                      weight: availableWeight,
+                                      rate: lotRate,
+                                    });
+                                  }}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    padding: '10px 12px',
+                                    borderRadius: 12,
+                                    background: isSelectedLot ? 'rgba(0, 122, 255, 0.12)' : 'var(--fill-quaternary, rgba(120,120,128,0.06))',
+                                    border: isSelectedLot ? '1.5px solid var(--ios-blue)' : '0.5px solid var(--separator)',
+                                    marginTop: 6,
+                                    cursor: 'pointer',
+                                    transition: 'all 0.15s ease',
+                                  }}
+                                  className="hover-bg"
+                                >
+                                  <div style={{ minWidth: 0, flex: 1 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                      <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)' }}>
+                                        {lot.boughtFrom || lot.supplier || 'Stock Batch'}
+                                      </span>
+
+                                      {isSelectedLot ? (
                                         <span
                                           style={{
                                             fontSize: 10,
                                             fontWeight: 700,
-                                            padding: '1px 5px',
+                                            padding: '2px 6px',
                                             borderRadius: 6,
-                                            background: 'rgba(175, 82, 222, 0.15)',
-                                            color: 'var(--ios-purple, #af52de)',
-                                            display: 'inline-flex',
-                                            alignItems: 'center',
-                                            gap: 3,
+                                            background: 'rgba(0, 122, 255, 0.15)',
+                                            color: 'var(--ios-blue)',
                                           }}
                                         >
-                                          <Lock size={9} />
-                                          Fully Allocated
+                                          Selected in this Dispatch
                                         </span>
+                                      ) : (
+                                        <span
+                                          style={{
+                                            fontSize: 10,
+                                            fontWeight: 700,
+                                            padding: '2px 6px',
+                                            borderRadius: 6,
+                                            background: isPartiallyUsed ? 'rgba(255, 149, 0, 0.15)' : 'rgba(52, 199, 89, 0.15)',
+                                            color: isPartiallyUsed ? 'var(--ios-orange)' : 'var(--ios-green)',
+                                          }}
+                                        >
+                                          {isPartiallyUsed ? 'Partially Used' : 'Available'}
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 2, display: 'flex', gap: 6 }}>
+                                      <span>{formatDisplayDate(lot.date)}</span>
+                                      <span>·</span>
+                                      <span>Stored: {lot.storedAt || 'Yard'}</span>
+                                    </div>
+                                  </div>
+
+                                  <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <div>
+                                      <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">
+                                        {availableWeight.toFixed(2)}t available
                                       </div>
-                                      <div style={{ fontSize: 11, color: 'var(--label-tertiary)', marginTop: 1 }}>
-                                        {formatDisplayDate(lot.date)} · {usedByDispatches.length} {usedByDispatches.length === 1 ? 'dispatch' : 'dispatches'}
+                                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ios-blue)' }} className="tabular-nums">
+                                        {curSym} {formatAmountNumber(lotRate, settings)}/t
                                       </div>
                                     </div>
 
-                                    <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                      <div style={{ fontSize: 12, color: 'var(--label-tertiary)' }} className="tabular-nums">
-                                        {effectiveWeight.toFixed(2)}t
-                                      </div>
-                                      <Lock size={13} style={{ color: 'var(--label-tertiary)' }} />
+                                    {isSelectedLot ? (
+                                      <Check size={18} style={{ color: 'var(--ios-blue)' }} strokeWidth={2.5} />
+                                    ) : (
+                                      <ArrowRight size={15} style={{ color: 'var(--label-tertiary)' }} />
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {/* Coal: Mines Section */}
+          {isCoal && (
+            <div>
+              {filteredMines.length === 0 ? (
+                <div style={{ padding: '36px 16px', textAlign: 'center', color: 'var(--label-secondary)' }}>
+                  <Layers size={40} style={{ opacity: 0.35, margin: '0 auto 8px' }} />
+                  <div style={{ fontSize: 15, fontWeight: 600 }}>No Mines Found</div>
+                  <div style={{ fontSize: 12, color: 'var(--label-tertiary)', marginTop: 4 }}>
+                    {searchQuery ? `No results for "${searchQuery}"` : 'Add mines in Inventory to see them here.'}
+                  </div>
+                </div>
+              ) : (
+                filteredMines.map((mine) => {
+                  const sourceKey = `mine_${mine.id}`;
+                  const mineLots = availableLotsBySourceKey.get(sourceKey) || [];
+                  const usedLots = usedLotsBySourceKey.get(sourceKey) || [];
+                  const isExpanded = expandedSourceIds[sourceKey] ?? true;
+                  const stock = calculateMineStock(mine, lots, otherDispatches);
+
+                  return (
+                    <div
+                      key={mine.id}
+                      style={{
+                        background: 'var(--bg-card)',
+                        borderRadius: 16,
+                        border: '0.5px solid var(--separator)',
+                        boxShadow: 'var(--shadow-card)',
+                        marginBottom: 14,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      {/* Mine Section Header */}
+                      <div
+                        style={{
+                          padding: '12px 14px',
+                          background: 'var(--fill-tertiary)',
+                          borderBottom: isExpanded ? '0.5px solid var(--separator)' : 'none',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                        }}
+                      >
+                        <div
+                          style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0, cursor: 'pointer' }}
+                          onClick={() => {
+                            playPopSound();
+                            onClose();
+                            onSelect({
+                              mineId: mine.id,
+                              sourceName: mine.name,
+                              weight: stock.remainingTons > 0 ? stock.remainingTons : 0,
+                              rate: mine.ratePerTon || 0,
+                            });
+                          }}
+                        >
+                          <div
+                            style={{
+                              width: 36,
+                              height: 36,
+                              borderRadius: 10,
+                              background: 'rgba(0, 122, 255, 0.12)',
+                              color: 'var(--ios-blue)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              flexShrink: 0,
+                            }}
+                          >
+                            <Package size={18} />
+                          </div>
+
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {mine.name}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 12, color: 'var(--label-secondary)', display: 'flex', alignItems: 'center', gap: 6, marginTop: 1 }}>
+                              <span>Rate: <strong>{curSym} {formatAmountNumber(mine.ratePerTon)}/t</strong></span>
+                              <span>·</span>
+                              <span style={{ color: stock.isOverdrawn ? 'var(--ios-red)' : 'var(--label-secondary)' }}>
+                                {stock.remainingTons.toFixed(1)}t available
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <button
+                            type="button"
+                            onClick={() => toggleExpand(sourceKey)}
+                            style={{
+                              width: 32,
+                              height: 32,
+                              borderRadius: 8,
+                              background: 'none',
+                              border: 'none',
+                              color: 'var(--label-tertiary)',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                            }}
+                            title={isExpanded ? 'Collapse stock entries' : 'Expand stock entries'}
+                          >
+                            {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Stock entries list under this mine */}
+                      {isExpanded && (
+                        <div style={{ padding: '6px 10px 10px' }}>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 700,
+                              color: 'var(--label-secondary)',
+                              textTransform: 'uppercase',
+                              padding: '6px 8px 4px',
+                              letterSpacing: 0.3,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                            }}
+                          >
+                            <span>Stock With Balance ({mineLots.length})</span>
+                            {usedLots.length > 0 && (
+                              <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--label-tertiary)', textTransform: 'none' }}>
+                                {usedLots.length} fully allocated
+                              </span>
+                            )}
+                          </div>
+
+                          {mineLots.length === 0 ? (
+                            <div style={{ padding: '12px 8px', fontSize: 13, color: 'var(--label-tertiary)', fontStyle: 'italic' }}>
+                              {usedLots.length > 0
+                                ? `All stock entries for this mine (${usedLots.length}) are fully allocated to dispatches.`
+                                : 'No stock entries recorded in this mine yet. Add stock in Inventory first, or use Manual / Custom Source.'}
+                            </div>
+                          ) : (
+                            mineLots.map((lot) => {
+                              const isSelectedLot = currentLotId === lot.id;
+                              const stock = calculateLotStock(lot, otherDispatches);
+                              const availableWeight = Math.max(0, stock.remainingWeight);
+                              const lotRate = lot.landedRate || lot.purchaseRate || lot.ratePerTon || mine.ratePerTon;
+                              const isPartiallyUsed = stock.usedWeight > 0.001 && availableWeight > 0.001;
+
+                              return (
+                                <div
+                                  key={lot.id}
+                                  onClick={() => {
+                                    playPopSound();
+                                    onClose();
+                                    onSelect({
+                                      mineId: mine.id,
+                                      supplierId: lot.supplierId,
+                                      lotId: lot.id,
+                                      sourceName: `${mine.name} - ${lot.truckNumber || lot.boughtFrom || lot.supplier || 'Stock Batch'}${lot.supplier || lot.boughtFrom ? ` (via ${lot.supplier || lot.boughtFrom})` : ''}`,
+                                      weight: availableWeight,
+                                      rate: lotRate,
+                                    });
+                                  }}
+                                  style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'space-between',
+                                    padding: '10px 12px',
+                                    borderRadius: 12,
+                                    background: isSelectedLot ? 'rgba(0, 122, 255, 0.12)' : 'var(--fill-quaternary, rgba(120,120,128,0.06))',
+                                    border: isSelectedLot ? '1.5px solid var(--ios-blue)' : '0.5px solid var(--separator)',
+                                    marginTop: 6,
+                                    cursor: 'pointer',
+                                    transition: 'all 0.15s ease',
+                                  }}
+                                  className="hover-bg"
+                                >
+                                  <div style={{ minWidth: 0, flex: 1 }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                      <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)' }}>
+                                        {lot.boughtFrom || lot.supplier || 'Stock Batch'}
+                                      </span>
+
+                                      {isSelectedLot ? (
+                                        <span
+                                          style={{
+                                            fontSize: 10,
+                                            fontWeight: 700,
+                                            padding: '2px 6px',
+                                            borderRadius: 6,
+                                            background: 'rgba(0, 122, 255, 0.15)',
+                                            color: 'var(--ios-blue)',
+                                          }}
+                                        >
+                                          Selected in this Dispatch
+                                        </span>
+                                      ) : (
+                                        <span
+                                          style={{
+                                            fontSize: 10,
+                                            fontWeight: 700,
+                                            padding: '2px 6px',
+                                            borderRadius: 6,
+                                            background: isPartiallyUsed ? 'rgba(255, 149, 0, 0.15)' : 'rgba(52, 199, 89, 0.15)',
+                                            color: isPartiallyUsed ? 'var(--ios-orange)' : 'var(--ios-green)',
+                                          }}
+                                        >
+                                          {isPartiallyUsed ? 'Partially Used' : 'Available'}
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 2, display: 'flex', gap: 6 }}>
+                                      <span>{formatDisplayDate(lot.date)}</span>
+                                      <span>·</span>
+                                      <span>Stored: {lot.storedAt || mine.location || 'Yard'}</span>
                                     </div>
                                   </div>
-                                );
-                              })}
+
+                                  <div style={{ textAlign: 'right', flexShrink: 0, marginLeft: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <div>
+                                      <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">
+                                        {availableWeight.toFixed(2)}t available
+                                      </div>
+                                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ios-blue)' }} className="tabular-nums">
+                                        {curSym} {formatAmountNumber(lotRate, settings)}/t
+                                      </div>
+                                    </div>
+
+                                    {isSelectedLot ? (
+                                      <Check size={18} style={{ color: 'var(--ios-blue)' }} strokeWidth={2.5} />
+                                    ) : (
+                                      <ArrowRight size={15} style={{ color: 'var(--label-tertiary)' }} />
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+
+                          {/* Expandable view for fully allocated entries */}
+                          {usedLots.length > 0 && (
+                            <div style={{ marginTop: 8 }}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  playPopSound();
+                                  setExpandedUsedSources((prev) => ({
+                                    ...prev,
+                                    [sourceKey]: !prev[sourceKey],
+                                  }));
+                                }}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  padding: '6px 8px',
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  color: 'var(--label-tertiary)',
+                                  cursor: 'pointer',
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 4,
+                                }}
+                              >
+                                <Lock size={11} />
+                                <span>
+                                  {expandedUsedSources[sourceKey]
+                                    ? `Hide ${usedLots.length} fully allocated entries`
+                                    : `View ${usedLots.length} fully allocated entries`}
+                                </span>
+                              </button>
+
+                              {expandedUsedSources[sourceKey] && (
+                                <div style={{ marginTop: 4, opacity: 0.6 }}>
+                                  {usedLots.map((lot) => {
+                                    const billed = lot.billedWeight || lot.tonnage || 0;
+                                    const received = lot.receivedWeight || billed;
+                                    const effectiveWeight = received > 0 ? received : billed;
+
+                                    return (
+                                      <div
+                                        key={lot.id}
+                                        style={{
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'space-between',
+                                          padding: '8px 10px',
+                                          borderRadius: 10,
+                                          background: 'var(--fill-quaternary)',
+                                          border: '0.5px solid var(--separator)',
+                                          marginTop: 4,
+                                          fontSize: 12,
+                                        }}
+                                      >
+                                        <div>
+                                          <div style={{ fontWeight: 600, color: 'var(--label-primary)' }}>
+                                            {lot.boughtFrom || lot.supplier}
+                                          </div>
+                                          <div style={{ color: 'var(--label-tertiary)', fontSize: 11 }}>
+                                            {formatDisplayDate(lot.date)} · Fully consumed
+                                          </div>
+                                        </div>
+                                        <div style={{ textAlign: 'right', color: 'var(--label-secondary)' }} className="tabular-nums">
+                                          {effectiveWeight.toFixed(2)}t total
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
-              );
-            })
+                  );
+                })
+              )}
+            </div>
           )}
         </div>
       </div>

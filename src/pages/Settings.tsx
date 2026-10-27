@@ -61,6 +61,7 @@ import {
   CloudOff,
   Lightbulb,
   History,
+  Database,
   // Sparkles,
 } from 'lucide-react';
 import { triggerConfetti, playSuccessSound, playPopSound, playCashChime } from '../utils/delight';
@@ -71,6 +72,7 @@ import IOSSetPasscodeModal from '../components/IOSSetPasscodeModal';
 import IOSVerifyPasscodeModal from '../components/IOSVerifyPasscodeModal';
 import IOSImportConfirmModal from '../components/IOSImportConfirmModal';
 import IOSTaxFormulaModal from '../components/IOSTaxFormulaModal';
+import MaterialSettingsPanel from '../components/MaterialSettingsPanel';
 import IOSTotpMfaModal from '../components/IOSTotpMfaModal';
 import IOSSelect, { type IOSSelectOption } from '../components/IOSSelect';
 import {
@@ -229,6 +231,7 @@ export default function Settings() {
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     security: false,
     google: false,
+    materials: false,
     business: false,
     appearance: false,
     currency: false,
@@ -268,6 +271,8 @@ export default function Settings() {
   const [showRemoveLogoConfirm, setShowRemoveLogoConfirm] = useState(false);
   const [showRemoveSignatureConfirm, setShowRemoveSignatureConfirm] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showSeedConfirm, setShowSeedConfirm] = useState(false);
+  const [isSeeding, setIsSeeding] = useState(false);
   const [showSignedInClearModal, setShowSignedInClearModal] = useState(false);
   const [showDisableLockConfirm, setShowDisableLockConfirm] = useState(false);
   const [showVerifyPinForDisable, setShowVerifyPinForDisable] = useState(false);
@@ -1835,7 +1840,49 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* ── ACCORDION 3: Business Profile & Invoicing ── */}
+      {/* ── ACCORDION 3: Materials & Pricing ── */}
+      <div className="ios-group" style={{ marginBottom: 14 }}>
+        <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
+          <div
+            className="ios-cell"
+            onClick={() => toggleSection('materials')}
+            style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 16px', minHeight: 54 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+              <div className="ios-glyph-badge" style={{ background: 'var(--ios-orange)', flexShrink: 0 }}>
+                <Layers size={18} color="#FFFFFF" />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
+                  Material Catalogue
+                </span>
+                {!openSections['materials'] && (
+                  <span style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
+                    {(settings.materialItems?.filter((item) => item.isActive !== false).length || 4)} active materials
+                  </span>
+                )}
+              </div>
+            </div>
+            <ChevronDown
+              style={{ width: 18, height: 18, color: 'var(--label-tertiary)', transform: openSections['materials'] ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)' }}
+              strokeWidth={2.4}
+            />
+            {openSections['materials'] && <div className="ios-separator with-glyph" />}
+          </div>
+          {openSections['materials'] && (
+            <MaterialSettingsPanel
+              settings={settings}
+              onSave={async (nextSettings) => {
+                await saveSettings(nextSettings);
+                setSettings(nextSettings);
+                showToast('Material catalogue saved');
+              }}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* ── ACCORDION 4: Business Profile & Invoicing ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
           <div
@@ -2873,6 +2920,28 @@ export default function Settings() {
                 <div className="ios-separator with-glyph" />
               </div>
 
+              {/* Seed Demo / Test Data */}
+              <div
+                className="ios-cell"
+                onClick={() => {
+                  playPopSound();
+                  setShowSeedConfirm(true);
+                }}
+                style={{ cursor: 'pointer' }}
+              >
+                <div className="ios-glyph-badge" style={{ background: '#8B5CF6' }}>
+                  <Database size={18} color="#FFFFFF" />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <span className="ios-cell-label" style={{ color: 'var(--label-primary)' }}>
+                    Populate Demo / Test Data
+                  </span>
+                  <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Seed buyers, suppliers, inventory & dispatches (devSeed.ts)</div>
+                </div>
+                <ChevronRight size={18} color="var(--label-tertiary)" />
+                <div className="ios-separator with-glyph" />
+              </div>
+
               {/* Erase All Data */}
               <div
                 className="ios-cell"
@@ -3021,6 +3090,29 @@ export default function Settings() {
         icon="warning"
         onConfirm={handleConfirmClear}
         onCancel={() => setShowClearConfirm(false)}
+      />
+
+      <IOSConfirmModal
+        isOpen={showSeedConfirm}
+        title="Populate Demo / Test Data?"
+        message="This will overwrite local database records with realistic sample buyers, suppliers, inventory lots, dispatches, and payments (devSeed.ts)."
+        confirmText={isSeeding ? 'Populating...' : 'Populate Data'}
+        cancelText="Cancel"
+        destructive={false}
+        countdownSeconds={0}
+        icon="none"
+        onConfirm={async () => {
+          setIsSeeding(true);
+          try {
+            if (typeof (window as any).seedTestData === 'function') {
+              await (window as any).seedTestData({ reload: true, clearBeforeSeed: true });
+            }
+          } finally {
+            setIsSeeding(false);
+            setShowSeedConfirm(false);
+          }
+        }}
+        onCancel={() => setShowSeedConfirm(false)}
       />
 
       <IOSConfirmModal

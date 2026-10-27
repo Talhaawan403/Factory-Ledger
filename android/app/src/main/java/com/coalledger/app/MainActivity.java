@@ -1,5 +1,7 @@
 package com.coalledger.app;
 
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.Window;
 import android.view.WindowManager;
@@ -27,5 +29,49 @@ public class MainActivity extends BridgeActivity {
         if (insetsController != null) {
             insetsController.show(WindowInsetsCompat.Type.statusBars());
         }
+
+        handleDevSeedIntent(getIntent());
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        handleDevSeedIntent(getIntent());
+    }
+
+    @Override
+    public void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleDevSeedIntent(intent);
+    }
+
+    private void handleDevSeedIntent(Intent intent) {
+        if (intent == null) return;
+        boolean hasDevSeedExtra = intent.getBooleanExtra("devSeed", false);
+        Uri data = intent.getData();
+        boolean hasDevSeedUri = data != null && "factoryledger".equals(data.getScheme()) && "seed".equals(data.getHost());
+
+        if (hasDevSeedExtra || hasDevSeedUri) {
+            intent.removeExtra("devSeed");
+            if (hasDevSeedUri) {
+                intent.setData(null);
+            }
+            triggerDevSeed();
+        }
+    }
+
+    private void triggerDevSeed() {
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            getBridge().getWebView().postDelayed(() -> {
+                String js = "if (typeof window.seedTestData === 'function') { " +
+                            "  window.seedTestData({ reload: true, clearBeforeSeed: true }); " +
+                            "} else { " +
+                            "  window.__pendingDevSeed = true; " +
+                            "}";
+                getBridge().getWebView().evaluateJavascript(js, null);
+            }, 600);
+        }
     }
 }
+

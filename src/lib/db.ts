@@ -2,6 +2,12 @@ import type { Dispatch, Party, AppSettings, Payment, PurchaseOrder, BackupPayloa
 import { getTodayDateString } from "../utils/dateUtils";
 import { idb, requestPersistentStorage, type SyncConflictRecord } from "./dexieDb";
 import { v4 as uuidv4 } from 'uuid';
+import {
+  COAL_ITEM_ID,
+  DEFAULT_MATERIAL_ITEMS,
+  normalizeMaterialItems,
+  normalizeSuppliers,
+} from '../utils/materials';
 
 const SETTINGS_KEY = "app_settings";
 const DATA_VERSION_KEY = "coal_ledger_version";
@@ -40,6 +46,8 @@ export const INITIAL_SETTINGS: AppSettings = {
   accountType: "Commercial Coal Trader",
   companyAddress: "",
   ntnNumber: "",
+  materialItems: DEFAULT_MATERIAL_ITEMS.map((item) => ({ ...item })),
+  suppliers: [],
   appLockEnabled: false,
   pinHash: "",
   pinLength: 5,
@@ -204,7 +212,17 @@ export function cleanNumber(val: any, fallback = 0): number {
     return fallback;
   }
   const str = String(val).replace(/,/g, '').trim();
-  if (str === '') return fallback;
+  const lower = str.toLowerCase();
+  if (
+    str === '' ||
+    lower === 'nan' ||
+    lower === 'infinity' ||
+    lower === '-infinity' ||
+    lower === 'null' ||
+    lower === 'undefined'
+  ) {
+    return fallback;
+  }
   const parsed = Number(str);
   return isNaN(parsed) || !isFinite(parsed) ? fallback : parsed;
 }
@@ -223,6 +241,13 @@ export function sanitizeDispatch(d: Partial<Dispatch>): Dispatch {
     date: d.date || getTodayDateString(),
     truckNumber: d.truckNumber || '',
     factoryName: d.factoryName || '',
+    itemId: (d.itemId || COAL_ITEM_ID).trim(),
+    itemName: (d.itemName || 'Coal').trim(),
+    pricingModel: d.pricingModel === 'purity' || d.pricingModel === 'flat' ? d.pricingModel : 'gcv',
+    qualityLabel: (d.qualityLabel || (d.pricingModel === 'purity' ? 'Purity' : 'GCV')).trim(),
+    qualityUnit: (d.qualityUnit || (d.pricingModel === 'gcv' || !d.pricingModel ? 'kcal/kg' : '%')).trim(),
+    ratePerQualityUnit: d.ratePerQualityUnit !== undefined ? cleanNumber(d.ratePerQualityUnit) : undefined,
+    receivedQuality: d.receivedQuality !== undefined ? cleanNumber(d.receivedQuality) : undefined,
     targetGcv: cleanNumber(d.targetGcv),
     baseRate: cleanNumber(d.baseRate),
     commissionPerTon: d.commissionPerTon !== undefined ? cleanNumber(d.commissionPerTon) : undefined,
@@ -235,6 +260,7 @@ export function sanitizeDispatch(d: Partial<Dispatch>): Dispatch {
     manualDeduction: d.manualDeduction !== undefined ? cleanNumber(d.manualDeduction) : undefined,
     manualPremium: d.manualPremium !== undefined ? cleanNumber(d.manualPremium) : undefined,
     manualTax: d.manualTax !== undefined ? cleanNumber(d.manualTax) : undefined,
+    dieselRateAdjustment: d.dieselRateAdjustment !== undefined ? cleanNumber(d.dieselRateAdjustment) : undefined,
     taxMethod: d.taxMethod || 'manual',
     taxSalesPercent: d.taxSalesPercent !== undefined
       ? cleanNumber(d.taxSalesPercent)
@@ -244,7 +270,7 @@ export function sanitizeDispatch(d: Partial<Dispatch>): Dispatch {
     taxIncomePercent: d.taxIncomePercent !== undefined
       ? cleanNumber(d.taxIncomePercent)
       : (d.taxMethod === 'formula_18_5'
-          ? (getCachedSettings()?.taxFormulaIncomePercent ?? 5)
+          ? ((d.itemId === 'material-laterite' || (d.itemName || '').toLowerCase().includes('laterite')) ? 5.5 : (getCachedSettings()?.taxFormulaIncomePercent ?? 5))
           : undefined),
     overheads: {
       loading: cleanNumber(d.overheads?.loading),
@@ -261,6 +287,7 @@ export function sanitizeDispatch(d: Partial<Dispatch>): Dispatch {
           purchaseRate: cleanNumber(ci.purchaseRate),
           lotId: ci.lotId || undefined,
           mineId: ci.mineId || undefined,
+          supplierId: ci.supplierId || undefined,
         }))
       : [],
     gcvAdjustment: d.gcvAdjustment === 'prorata' ? 'prorata' : (d.gcvAdjustment === 'manual' ? 'manual' : undefined),
@@ -317,9 +344,12 @@ export function sanitizeGeneralExpense(e: Partial<GeneralExpense>): GeneralExpen
 export function sanitizePayment(p: Partial<Payment>): Payment {
   const now = Date.now();
   const isDeleted = Boolean(p.deleted);
+  const partyId = p.partyId || p.supplierId || p.mineId || '';
   return {
     id: p.id || '',
-    partyId: p.partyId || '',
+    partyId,
+    supplierId: p.supplierId || undefined,
+    mineId: p.mineId || undefined,
     date: p.date || getTodayDateString(),
     amount: cleanNumber(p.amount),
     type: p.type === 'paid' ? 'paid' : 'received',
@@ -336,12 +366,20 @@ export function sanitizePayment(p: Partial<Payment>): Payment {
 export function sanitizeParty(p: Partial<Party>): Party {
   const now = Date.now();
   const isDeleted = Boolean(p.deleted);
+  const materialIds = Array.isArray(p.materialIds)
+    ? Array.from(new Set(p.materialIds.map(String).map((v) => v.trim()).filter(Boolean)))
+    : undefined;
   return {
     id: p.id || '',
     name: p.name || '',
     contactPerson: p.contactPerson || '',
     phone: p.phone || '',
     address: p.address || '',
+    notes: p.notes || '',
+    type: p.type === 'supplier' ? 'supplier' : 'buyer',
+    materialIds: materialIds && materialIds.length > 0 ? materialIds : undefined,
+    isDirectMine: p.isDirectMine !== undefined ? Boolean(p.isDirectMine) : undefined,
+    linkedMineId: p.linkedMineId || undefined,
     createdAt: cleanNumber(p.createdAt, now),
     updatedAt: cleanNumber(p.updatedAt, cleanNumber(p.createdAt, now)),
     isArchived: Boolean(p.isArchived),
@@ -361,6 +399,12 @@ export function sanitizePurchaseOrder(po: Partial<PurchaseOrder>): PurchaseOrder
     targetGcv: cleanNumber(po.targetGcv),
     baseRate: cleanNumber(po.baseRate),
     commissionPerTon: cleanNumber(po.commissionPerTon),
+    itemId: (po.itemId || COAL_ITEM_ID).trim(),
+    itemName: (po.itemName || 'Coal').trim(),
+    pricingModel: po.pricingModel === 'purity' || po.pricingModel === 'flat' ? po.pricingModel : 'gcv',
+    qualityLabel: (po.qualityLabel || (po.pricingModel === 'purity' ? 'Purity' : 'GCV')).trim(),
+    qualityUnit: (po.qualityUnit || (po.pricingModel === 'gcv' || !po.pricingModel ? 'kcal/kg' : '%')).trim(),
+    ratePerQualityUnit: po.ratePerQualityUnit !== undefined ? cleanNumber(po.ratePerQualityUnit) : undefined,
     totalTons: po.totalTons !== undefined ? cleanNumber(po.totalTons) : undefined,
     notes: po.notes || undefined,
     gcvAdjustment: po.gcvAdjustment === 'prorata' ? 'prorata' : 'manual',
@@ -395,6 +439,9 @@ export function sanitizeLot(l: Partial<InventoryLot>): InventoryLot {
     id: l.id || '',
     mineId: l.mineId || undefined,
     mineName: (l.mineName || '').trim() || undefined,
+    itemId: (l.itemId || COAL_ITEM_ID).trim(),
+    itemName: (l.itemName || 'Coal').trim(),
+    supplierId: (l.supplierId || '').trim() || undefined,
     boughtFrom: (l.boughtFrom || '').trim() || undefined,
     storedAt: (l.storedAt || '').trim() || undefined,
     tonnage: tonnage !== undefined ? Math.round(tonnage * 100) / 100 : undefined,
@@ -413,6 +460,8 @@ export function sanitizeLot(l: Partial<InventoryLot>): InventoryLot {
     purchaseRate: Math.round(purchaseRate * 100) / 100,
     landedRate: Math.round(landedRate * 100) / 100,
     gcv: l.gcv !== undefined && l.gcv !== null ? cleanNumber(l.gcv) : undefined,
+    targetGcv: l.targetGcv !== undefined && l.targetGcv !== null ? cleanNumber(l.targetGcv) : undefined,
+    grade: (l.grade || '').trim() || undefined,
     truckNumber: (l.truckNumber || '').trim() || undefined,
     mineSource: (l.mineSource || l.mineName || '').trim() || undefined,
     notes: (l.notes || '').trim() || undefined,
@@ -433,6 +482,8 @@ export function sanitizeMine(m: Partial<Mine>): Mine {
     ratePerTon: cleanNumber(m.ratePerTon),
     location: (m.location || '').trim() || undefined,
     notes: (m.notes || '').trim() || undefined,
+    phone: (m.phone || '').trim() || undefined,
+    defaultSupplierId: (m.defaultSupplierId || '').trim() || undefined,
     createdAt: cleanNumber(m.createdAt, now),
     updatedAt: cleanNumber(m.updatedAt, cleanNumber(m.createdAt, now)),
     deleted: isDeleted,
@@ -483,6 +534,69 @@ export async function ensureInitialized(): Promise<void> {
           localStorage.removeItem('coal_ledger_safety_dispatches_bak');
           localStorage.removeItem('coal_ledger_safety_payments_bak');
           localStorage.removeItem('coal_ledger_safety_pos_bak');
+        }
+
+        // 3. Ensure all active mines have a linked Direct Mine supplier party
+        try {
+          const activeMines = (await idb.mines.toArray()).filter((m) => !m.deleted);
+          if (activeMines.length > 0) {
+            const allParties = await idb.parties.toArray();
+            const now = Date.now();
+            for (const m of activeMines) {
+              let directParty = allParties.find(
+                (p) =>
+                  !p.deleted &&
+                  p.type === 'supplier' &&
+                  (p.linkedMineId === m.id ||
+                    (m.defaultSupplierId && p.id === m.defaultSupplierId) ||
+                    p.name.trim().toLowerCase() === `${m.name.trim().toLowerCase()} direct ledger`)
+              );
+              if (!directParty) {
+                const newDirectId = uuidv4();
+                directParty = {
+                  id: newDirectId,
+                  name: `${m.name.trim()} Direct Ledger`,
+                  type: 'supplier',
+                  contactPerson: 'Mine Owner',
+                  phone: m.phone || '',
+                  address: m.location || '',
+                  notes: `Direct ledger for ${m.name.trim()} mine owner purchases and payments.`,
+                  isDirectMine: true,
+                  linkedMineId: m.id,
+                  materialIds: [COAL_ITEM_ID],
+                  isArchived: false,
+                  createdAt: m.createdAt || now,
+                  updatedAt: now,
+                  dirty: true,
+                };
+                await idb.parties.put(directParty);
+                m.defaultSupplierId = directParty.id;
+                m.updatedAt = now;
+                m.dirty = true;
+                await idb.mines.put(m);
+              } else {
+                let updated = false;
+                if (m.defaultSupplierId !== directParty.id) {
+                  m.defaultSupplierId = directParty.id;
+                  updated = true;
+                }
+                if (directParty.linkedMineId !== m.id || !directParty.isDirectMine) {
+                  directParty.linkedMineId = m.id;
+                  directParty.isDirectMine = true;
+                  directParty.updatedAt = now;
+                  directParty.dirty = true;
+                  await idb.parties.put(directParty);
+                }
+                if (updated) {
+                  m.updatedAt = now;
+                  m.dirty = true;
+                  await idb.mines.put(m);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[DB] Mine-party reconciliation notice:', err);
         }
       } catch (err) {
         console.warn('[DB] Migration check notice:', err);
@@ -775,6 +889,20 @@ export async function saveParty(party: Party): Promise<void> {
 
 export async function deleteParty(id: string): Promise<void> {
   await ensureInitialized();
+  const party = await idb.parties.get(id);
+
+  if (party && (party.isDirectMine || party.linkedMineId)) {
+    const linkedMineId = party.linkedMineId;
+    if (linkedMineId) {
+      const lots = await getMineLots(linkedMineId);
+      if (lots.length > 0) {
+        throw new Error(
+          `Cannot delete direct mine supplier party while the linked mine has existing stock entries (${lots.length} entries). Delete the stock entries first.`
+        );
+      }
+    }
+  }
+
   const [dispatches, payments, pos] = await Promise.all([
     getPartyDispatches(id),
     getPartyPayments(id),
@@ -787,6 +915,19 @@ export async function deleteParty(id: string): Promise<void> {
   }
   const existing = await idb.parties.get(id);
   const now = Date.now();
+
+  // If this was linked to a mine, clean up defaultSupplierId on the mine
+  if (existing?.linkedMineId) {
+    const linkedMine = await idb.mines.get(existing.linkedMineId);
+    if (linkedMine && linkedMine.defaultSupplierId === id) {
+      linkedMine.defaultSupplierId = undefined;
+      linkedMine.updatedAt = now;
+      linkedMine.dirty = true;
+      await idb.mines.put(linkedMine);
+      notifyLedgerMutation('mine', linkedMine.id, 'update');
+    }
+  }
+
   if (existing) {
     await idb.parties.put({
       ...existing,
@@ -894,6 +1035,18 @@ export async function getPartyPayments(partyId: string): Promise<Payment[]> {
   await ensureInitialized();
   const list = await idb.payments.where('partyId').equals(partyId).toArray();
   return list.filter((p) => !p.deleted);
+}
+
+export async function getSupplierPayments(supplierId: string): Promise<Payment[]> {
+  await ensureInitialized();
+  const payments = await idb.payments.toArray();
+  const active = payments.filter((p) => !p.deleted && (p.supplierId === supplierId || p.partyId === supplierId));
+  active.sort((a, b) => {
+    const timeA = new Date(a.date).getTime() || a.createdAt || 0;
+    const timeB = new Date(b.date).getTime() || b.createdAt || 0;
+    return timeB - timeA;
+  });
+  return active;
 }
 
 export async function savePayment(payment: Payment): Promise<void> {
@@ -1213,20 +1366,255 @@ export async function saveMine(mine: Mine): Promise<void> {
     dirty: true,
   };
 
+  const oldName = existing?.name?.trim() || '';
+  const newName = sanitized.name.trim();
+  const isRenamed = Boolean(existing && oldName && oldName.toLowerCase() !== newName.toLowerCase());
+
+  // 1. Locate or auto-create the Direct Mine Supplier Party
+  const allParties = await idb.parties.toArray();
+  let directParty = allParties.find(
+    (p) =>
+      !p.deleted &&
+      p.type === 'supplier' &&
+      (p.linkedMineId === sanitized.id ||
+        (sanitized.defaultSupplierId && p.id === sanitized.defaultSupplierId) ||
+        (existing?.defaultSupplierId && p.id === existing.defaultSupplierId) ||
+        (oldName && p.name.trim().toLowerCase() === `${oldName.toLowerCase()} direct ledger`) ||
+        p.name.trim().toLowerCase() === `${newName.toLowerCase()} direct ledger`)
+  );
+
+  const newDirectPartyName = `${newName} Direct Ledger`;
+  const oldDirectPartyName = oldName ? `${oldName} Direct Ledger` : '';
+
+  if (!directParty) {
+    // Auto-create companion direct mine supplier party
+    const newDirectId = uuidv4();
+    directParty = {
+      id: newDirectId,
+      name: newDirectPartyName,
+      type: 'supplier',
+      contactPerson: 'Mine Owner',
+      phone: sanitized.phone || '',
+      address: sanitized.location || '',
+      notes: `Direct ledger for ${newName} mine owner purchases and payments.`,
+      isDirectMine: true,
+      linkedMineId: sanitized.id,
+      materialIds: [COAL_ITEM_ID],
+      isArchived: false,
+      createdAt: sanitized.createdAt || now,
+      updatedAt: now,
+      dirty: true,
+    };
+    await idb.parties.put(directParty);
+    notifyLedgerMutation('party', directParty.id, 'create');
+    itemToSave.defaultSupplierId = directParty.id;
+  } else {
+    // Update existing direct mine supplier party
+    let partyNeedsUpdate = false;
+    if (isRenamed && directParty.name !== newDirectPartyName) {
+      directParty.name = newDirectPartyName;
+      if (directParty.notes && oldName) {
+        directParty.notes = directParty.notes.split(oldName).join(newName);
+      }
+      partyNeedsUpdate = true;
+    }
+    if (directParty.linkedMineId !== sanitized.id) {
+      directParty.linkedMineId = sanitized.id;
+      partyNeedsUpdate = true;
+    }
+    if (!directParty.isDirectMine) {
+      directParty.isDirectMine = true;
+      partyNeedsUpdate = true;
+    }
+    if (sanitized.location && (!directParty.address || (existing?.location && directParty.address === existing.location))) {
+      directParty.address = sanitized.location;
+      partyNeedsUpdate = true;
+    }
+    if (sanitized.phone && (!directParty.phone || (existing?.phone && directParty.phone === existing.phone))) {
+      directParty.phone = sanitized.phone;
+      partyNeedsUpdate = true;
+    }
+
+    if (partyNeedsUpdate) {
+      directParty.updatedAt = now;
+      directParty.dirty = true;
+      await idb.parties.put(directParty);
+      notifyLedgerMutation('party', directParty.id, 'update');
+    }
+    itemToSave.defaultSupplierId = directParty.id;
+  }
+
+  // 2. If renamed, cascade updates to all lots, dispatches, and payments
+  if (isRenamed) {
+    const cleanOld = oldName.toLowerCase();
+    const cleanOldDirect = oldDirectPartyName.toLowerCase();
+
+    // A. Update Lots
+    const allLots = await idb.lots.toArray();
+    for (const lot of allLots) {
+      const isMineLot =
+        lot.mineId === sanitized.id ||
+        (lot.mineName && lot.mineName.trim().toLowerCase() === cleanOld) ||
+        (lot.mineSource && lot.mineSource.trim().toLowerCase() === cleanOld);
+
+      if (isMineLot) {
+        let lotChanged = false;
+        if (lot.mineId !== sanitized.id) {
+          lot.mineId = sanitized.id;
+          lotChanged = true;
+        }
+        if (lot.mineName !== newName) {
+          lot.mineName = newName;
+          lotChanged = true;
+        }
+        if (lot.mineSource !== newName) {
+          lot.mineSource = newName;
+          lotChanged = true;
+        }
+        const boughtLower = (lot.boughtFrom || '').trim().toLowerCase();
+        if (boughtLower === cleanOldDirect || boughtLower === cleanOld) {
+          lot.boughtFrom = newDirectPartyName;
+          lotChanged = true;
+        }
+        const suppLower = (lot.supplier || '').trim().toLowerCase();
+        if (suppLower === cleanOldDirect || suppLower === cleanOld) {
+          lot.supplier = newDirectPartyName;
+          lotChanged = true;
+        }
+        if (directParty && !lot.supplierId && (boughtLower === cleanOldDirect || suppLower === cleanOldDirect)) {
+          lot.supplierId = directParty.id;
+          lotChanged = true;
+        }
+
+        if (lotChanged) {
+          lot.updatedAt = now;
+          lot.dirty = true;
+          await idb.lots.put(lot);
+          notifyLedgerMutation('lot', lot.id, 'update');
+        }
+      }
+    }
+
+    // B. Update Dispatches (coalInputs)
+    const allDispatches = await idb.dispatches.toArray();
+    for (const d of allDispatches) {
+      if (!d.coalInputs || d.coalInputs.length === 0) continue;
+      let dChanged = false;
+      const updatedInputs = d.coalInputs.map((ci) => {
+        const ciSource = (ci.sourceName || '').trim().toLowerCase();
+        const matchesMine = ci.mineId === sanitized.id || ciSource === cleanOld || ciSource === cleanOldDirect;
+        if (matchesMine) {
+          dChanged = true;
+          const wasDirect = ciSource === cleanOldDirect;
+          return {
+            ...ci,
+            mineId: sanitized.id,
+            sourceName: wasDirect ? newDirectPartyName : newName,
+          };
+        }
+        return ci;
+      });
+
+      if (dChanged) {
+        d.coalInputs = updatedInputs;
+        d.updatedAt = now;
+        d.dirty = true;
+        await idb.dispatches.put(d);
+        notifyLedgerMutation('dispatch', d.id, 'update');
+      }
+    }
+
+    // C. Update Payments
+    const allPayments = await idb.payments.toArray();
+    for (const p of allPayments) {
+      let pChanged = false;
+      const partyIdLower = (p.partyId || '').trim().toLowerCase();
+      const pNameLower = ((p as any).partyName || '').trim().toLowerCase();
+
+      if (p.mineId === sanitized.id) {
+        if (directParty && (!p.partyId || partyIdLower === cleanOld || partyIdLower === cleanOldDirect)) {
+          p.partyId = directParty.id;
+          p.supplierId = directParty.id;
+          pChanged = true;
+        }
+      } else if (
+        partyIdLower === cleanOld ||
+        partyIdLower === cleanOldDirect ||
+        pNameLower === cleanOld ||
+        pNameLower === cleanOldDirect
+      ) {
+        p.mineId = sanitized.id;
+        if (directParty) {
+          p.partyId = directParty.id;
+          p.supplierId = directParty.id;
+        } else {
+          p.partyId = newDirectPartyName;
+        }
+        pChanged = true;
+      }
+
+      if (pChanged) {
+        p.updatedAt = now;
+        p.dirty = true;
+        await idb.payments.put(p);
+        notifyLedgerMutation('payment', p.id, 'update');
+      }
+    }
+  }
+
   await idb.mines.put(itemToSave);
   notifyLedgerMutation('mine', sanitized.id, existing ? 'update' : 'create');
 }
 
 export async function deleteMine(id: string): Promise<void> {
   await ensureInitialized();
+  const existing = await idb.mines.get(id);
   const lots = await getMineLots(id);
   if (lots.length > 0) {
     throw new Error(
       `Cannot delete mine with existing stock entries (${lots.length} entries). Delete the stock entries first.`
     );
   }
-  const existing = await idb.mines.get(id);
+
   const now = Date.now();
+
+  // Find linked companion direct supplier party
+  const allParties = await idb.parties.toArray();
+  const directParty = allParties.find(
+    (p) =>
+      !p.deleted &&
+      p.type === 'supplier' &&
+      (p.linkedMineId === id ||
+        (existing?.defaultSupplierId && p.id === existing.defaultSupplierId) ||
+        (existing && p.name.trim().toLowerCase() === `${existing.name.trim().toLowerCase()} direct ledger`))
+  );
+
+  if (directParty) {
+    const allPayments = await idb.payments.toArray();
+    const relatedPayments = allPayments.filter(
+      (p) => !p.deleted && (p.mineId === id || p.partyId === directParty.id || p.supplierId === directParty.id)
+    );
+
+    if (relatedPayments.length > 0) {
+      // Archive party to protect financial history
+      directParty.isArchived = true;
+      directParty.notes = ((directParty.notes || '') + ' [Archived: Linked mine was deleted]').trim();
+      directParty.updatedAt = now;
+      directParty.dirty = true;
+      await idb.parties.put(directParty);
+      notifyLedgerMutation('party', directParty.id, 'update');
+    } else {
+      // Safe to soft delete clean companion party
+      directParty.deleted = true;
+      directParty.deletedAt = now;
+      directParty.updatedAt = now;
+      directParty.dirty = true;
+      await idb.parties.put(directParty);
+      recordTombstone(directParty.id);
+      notifyLedgerMutation('party', directParty.id, 'delete');
+    }
+  }
+
   if (existing) {
     await idb.mines.put({
       ...existing,
@@ -1253,8 +1641,20 @@ export async function deleteMine(id: string): Promise<void> {
 
 export async function getMineLots(mineId: string): Promise<InventoryLot[]> {
   await ensureInitialized();
-  const lots = await idb.lots.where('mineId').equals(mineId).toArray();
-  const active = lots.filter((l) => !l.deleted);
+  const mine = await idb.mines.get(mineId);
+  const lots = await idb.lots.toArray();
+  const cleanMineName = mine?.name ? mine.name.trim().toLowerCase() : '';
+  const active = lots.filter((l) => {
+    if (l.deleted) return false;
+    if (l.mineId === mineId) return true;
+    if (cleanMineName) {
+      return (
+        (l.mineName && l.mineName.trim().toLowerCase() === cleanMineName) ||
+        (l.mineSource && l.mineSource.trim().toLowerCase() === cleanMineName)
+      );
+    }
+    return false;
+  });
   active.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime() || (b.createdAt || 0) - (a.createdAt || 0));
   return active;
 }
@@ -1278,6 +1678,8 @@ export function getCachedSettings(): AppSettings {
           pinHash: parsed.pinHash || '',
           pinLength: typeof parsed.pinLength === 'number' ? parsed.pinLength : (parsed.pinHash ? 4 : 5),
           lockTimeout: typeof parsed.lockTimeout === 'number' ? parsed.lockTimeout : 0,
+          materialItems: normalizeMaterialItems(parsed.materialItems),
+          suppliers: normalizeSuppliers(parsed.suppliers),
         };
       } catch {}
     }
@@ -1303,6 +1705,8 @@ export async function getSettings(): Promise<AppSettings> {
       pinHash: parsed.pinHash || '',
       pinLength: typeof parsed.pinLength === 'number' ? parsed.pinLength : (parsed.pinHash ? 4 : 5),
       lockTimeout: typeof parsed.lockTimeout === 'number' ? parsed.lockTimeout : 0,
+      materialItems: normalizeMaterialItems(parsed.materialItems),
+      suppliers: normalizeSuppliers(parsed.suppliers),
     };
     cachedSettings = merged;
     return merged;
@@ -1326,6 +1730,8 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
     pinHash: settings.pinHash || '',
     pinLength: typeof settings.pinLength === 'number' ? settings.pinLength : (settings.pinHash ? 4 : 5),
     lockTimeout: typeof settings.lockTimeout === 'number' ? settings.lockTimeout : 0,
+    materialItems: normalizeMaterialItems(settings.materialItems),
+    suppliers: normalizeSuppliers(settings.suppliers),
   };
 
   const sharedChanged = Boolean(
@@ -1744,6 +2150,9 @@ export function validateBackupPayload(backup: any): BackupValidationResult {
       if (party[field] !== undefined && !isText(party[field])) return fail(`${label} has an invalid ${field}.`);
     }
     if (party.isArchived !== undefined && typeof party.isArchived !== 'boolean') return fail(`${label} has an invalid archive flag.`);
+    if (party.materialIds !== undefined && (!Array.isArray(party.materialIds) || party.materialIds.some((id: unknown) => !isText(id, true)))) {
+      return fail(`${label} has an invalid materialIds list.`);
+    }
   }
 
   for (const payment of payments) {
@@ -1774,6 +2183,17 @@ export function validateBackupPayload(backup: any): BackupValidationResult {
     for (const field of ['targetGcv', 'baseRate', 'labActualGcv', 'labReceivedWeight', 'labSulphur'] as const) {
       if (!isNumber(dispatch[field])) return fail(`${label} has an invalid ${field}.`);
     }
+    if (dispatch.itemId !== undefined && !isText(dispatch.itemId, true)) return fail(`${label} has an invalid item reference.`);
+    if (dispatch.itemName !== undefined && !isText(dispatch.itemName, true)) return fail(`${label} has an invalid item name.`);
+    if (dispatch.pricingModel !== undefined && !['gcv', 'purity', 'flat'].includes(dispatch.pricingModel)) {
+      return fail(`${label} has an invalid material pricing model.`);
+    }
+    for (const field of ['qualityLabel', 'qualityUnit'] as const) {
+      if (dispatch[field] !== undefined && !isText(dispatch[field], true)) return fail(`${label} has an invalid ${field}.`);
+    }
+    for (const field of ['ratePerQualityUnit', 'receivedQuality'] as const) {
+      if (dispatch[field] !== undefined && !isNumber(dispatch[field])) return fail(`${label} has an invalid ${field}.`);
+    }
     if (!isObject(dispatch.overheads)) return fail(`${label} has malformed overheads.`);
     for (const field of overheadFields) {
       if (!isNumber(dispatch.overheads[field])) return fail(`${label} has an invalid ${field} overhead.`);
@@ -1787,6 +2207,7 @@ export function validateBackupPayload(backup: any): BackupValidationResult {
       }
       if (input.lotId !== undefined && !isText(input.lotId, true)) return fail(`${label} has an invalid lot reference.`);
       if (input.mineId !== undefined && !isText(input.mineId, true)) return fail(`${label} has an invalid mine reference.`);
+      if (input.supplierId !== undefined && !isText(input.supplierId, true)) return fail(`${label} has an invalid supplier reference.`);
     }
     if (dispatch.poId !== undefined && !isText(dispatch.poId, true)) return fail(`${label} has an invalid purchase order reference.`);
     if (dispatch.status !== undefined && !['pending', 'settled'].includes(dispatch.status)) return fail(`${label} has an invalid status.`);
@@ -1832,6 +2253,9 @@ export function validateBackupPayload(backup: any): BackupValidationResult {
       if (lot[field] !== undefined && !isNumber(lot[field])) return fail(`${label} has an invalid ${field}.`);
     }
     if (lot.mineId !== undefined && !isText(lot.mineId, true)) return fail(`${label} has an invalid mine reference.`);
+    if (lot.itemId !== undefined && !isText(lot.itemId, true)) return fail(`${label} has an invalid item reference.`);
+    if (lot.itemName !== undefined && !isText(lot.itemName, true)) return fail(`${label} has an invalid item name.`);
+    if (lot.supplierId !== undefined && !isText(lot.supplierId, true)) return fail(`${label} has an invalid supplier reference.`);
   }
 
   for (const mine of mines) {
@@ -1857,6 +2281,10 @@ export function validateBackupPayload(backup: any): BackupValidationResult {
     if (typeof po.isActive !== 'boolean') return fail(`${label} has an invalid active flag.`);
     if (po.gcvAdjustment !== undefined && !['manual', 'prorata'].includes(po.gcvAdjustment)) return fail(`${label} has an invalid GCV adjustment mode.`);
     if (po.gcvAdjustmentRounding !== undefined && !['rupee', 'paisa'].includes(po.gcvAdjustmentRounding)) return fail(`${label} has an invalid GCV rounding mode.`);
+    if (po.itemId !== undefined && !isText(po.itemId, true)) return fail(`${label} has an invalid item reference.`);
+    if (po.itemName !== undefined && !isText(po.itemName, true)) return fail(`${label} has an invalid item name.`);
+    if (po.pricingModel !== undefined && !['gcv', 'purity', 'flat'].includes(po.pricingModel)) return fail(`${label} has an invalid material pricing model.`);
+    if (po.ratePerQualityUnit !== undefined && !isNumber(po.ratePerQualityUnit)) return fail(`${label} has an invalid rate per quality unit.`);
   }
 
   const settings = backup.settings;
@@ -1865,6 +2293,36 @@ export function validateBackupPayload(backup: any): BackupValidationResult {
   if (settings.defaultTaxMethod !== undefined && !['manual', 'formula_18_5'].includes(settings.defaultTaxMethod)) return fail('Backup settings contain an invalid default tax method.');
   for (const field of ['taxFormulaSalesPercent', 'taxFormulaIncomePercent'] as const) {
     if (settings[field] !== undefined && !isNumber(settings[field])) return fail(`Backup settings contain an invalid ${field}.`);
+  }
+  if (settings.materialItems !== undefined) {
+    if (!Array.isArray(settings.materialItems) || settings.materialItems.length > 100) return fail('Backup settings contain an invalid materials list.');
+    const materialIds = new Set<string>();
+    for (const material of settings.materialItems) {
+      if (!isObject(material) || !isText(material.id, true) || !isText(material.name, true)) return fail('Backup settings contain a malformed material.');
+      if (materialIds.has(material.id)) return fail(`Backup settings contain duplicate material ID "${material.id}".`);
+      materialIds.add(material.id);
+      if (!['gcv', 'purity', 'flat'].includes(material.pricingModel)) return fail(`Material "${material.name}" has an invalid pricing model.`);
+      if (material.defaultRate !== undefined && !isNumber(material.defaultRate)) return fail(`Material "${material.name}" has an invalid default rate.`);
+      if (material.qualityLabel !== undefined && !isText(material.qualityLabel, true)) return fail(`Material "${material.name}" has an invalid quality label.`);
+      if (material.qualityUnit !== undefined && !isText(material.qualityUnit, true)) return fail(`Material "${material.name}" has an invalid quality unit.`);
+      if (material.isActive !== undefined && typeof material.isActive !== 'boolean') return fail(`Material "${material.name}" has an invalid active flag.`);
+    }
+  }
+  if (settings.suppliers !== undefined) {
+    if (!Array.isArray(settings.suppliers) || settings.suppliers.length > 1000) return fail('Backup settings contain an invalid suppliers list.');
+    const supplierIds = new Set<string>();
+    for (const supplier of settings.suppliers) {
+      if (!isObject(supplier) || !isText(supplier.id, true) || !isText(supplier.name, true)) return fail('Backup settings contain a malformed supplier.');
+      if (supplierIds.has(supplier.id)) return fail(`Backup settings contain duplicate supplier ID "${supplier.id}".`);
+      supplierIds.add(supplier.id);
+      for (const field of ['contactPerson', 'phone', 'address'] as const) {
+        if (supplier[field] !== undefined && !isText(supplier[field])) return fail(`Supplier "${supplier.name}" has an invalid ${field}.`);
+      }
+      if (supplier.materialIds !== undefined && (!Array.isArray(supplier.materialIds) || supplier.materialIds.some((id: unknown) => !isText(id, true)))) {
+        return fail(`Supplier "${supplier.name}" has an invalid material assignment.`);
+      }
+      if (supplier.isArchived !== undefined && typeof supplier.isArchived !== 'boolean') return fail(`Supplier "${supplier.name}" has an invalid archive flag.`);
+    }
   }
   if (settings.updatedAt !== undefined && !isEpoch(settings.updatedAt)) return fail('Backup settings contain an invalid updated timestamp.');
 
@@ -1948,6 +2406,8 @@ export async function restoreBackup(
     pinHash: currentSettings.pinHash ?? '',
     pinLength: currentSettings.pinLength ?? 5,
     lockTimeout: currentSettings.lockTimeout ?? 0,
+    materialItems: normalizeMaterialItems(rawSettings.materialItems),
+    suppliers: normalizeSuppliers(rawSettings.suppliers),
   };
   const previousSettingsRaw = typeof localStorage !== 'undefined' ? localStorage.getItem(SETTINGS_KEY) : null;
   const previousVersionRaw = typeof localStorage !== 'undefined' ? localStorage.getItem(DATA_VERSION_KEY) : null;
@@ -2352,6 +2812,8 @@ export function mergeLedgerData(
     pinHash: local.settings?.pinHash ?? '',
     pinLength: local.settings?.pinLength ?? 5,
     lockTimeout: local.settings?.lockTimeout ?? 0,
+    materialItems: normalizeMaterialItems(mergedSettings.materialItems),
+    suppliers: normalizeSuppliers(mergedSettings.suppliers),
   };
 
   const merged: BackupPayload = {

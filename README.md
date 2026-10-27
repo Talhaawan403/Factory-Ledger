@@ -20,27 +20,177 @@ Factory Ledger combines truck dispatch settlement, coal-lot allocation, landed-c
 
 ## Screenshots
 
+### Core Operations & Settlement
+
 <div align="center">
   <table>
     <tr>
       <td align="center" width="33%">
-        <strong>App Lock</strong><br />
-        <sub>PIN and Android biometrics</sub><br /><br />
-        <img src="docs/images/lockscreen.png" width="240" alt="Factory Ledger app lock screen" />
+        <strong>Dashboard & Books</strong><br />
+        <sub>Net effect, recognized inflow vs outflow</sub><br /><br />
+        <img src="docs/images/dashboard-summary.jpg" width="240" alt="Factory Ledger dashboard and books summary" />
       </td>
       <td align="center" width="33%">
         <strong>Dispatch Settlement</strong><br />
-        <sub>Recipe, quality, weight, and margin</sub><br /><br />
-        <img src="docs/images/dispatch.png" width="240" alt="Factory Ledger dispatch form" />
+        <sub>Quality specs, live profit calc, and margin</sub><br /><br />
+        <img src="docs/images/dispatch-settlement.jpg" width="240" alt="Factory Ledger dispatch settlement form" />
       </td>
       <td align="center" width="33%">
-        <strong>Settings and Sync</strong><br />
-        <sub>Backup, security, and cloud controls</sub><br /><br />
-        <img src="docs/images/settings.png" width="240" alt="Factory Ledger settings screen" />
+        <strong>Deal Estimator</strong><br />
+        <sub>Truck capacity presets, freight, and profit margin</sub><br /><br />
+        <img src="docs/images/deal-estimator.jpg" width="240" alt="Factory Ledger deal estimator tool" />
       </td>
     </tr>
   </table>
 </div>
+
+### Parties & Counterparty Ledgers
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="33%">
+        <strong>Parties Directory</strong><br />
+        <sub>Buyer & supplier accounts with live balances</sub><br /><br />
+        <img src="docs/images/parties-card-view.jpg" width="240" alt="Factory Ledger parties directory" />
+      </td>
+      <td align="center" width="33%">
+        <strong>Buyer Account Ledger</strong><br />
+        <sub>Invoiced totals, payments received, and dispatches</sub><br /><br />
+        <img src="docs/images/buyer-account-ledger.jpg" width="240" alt="Factory Ledger buyer account ledger" />
+      </td>
+      <td align="center" width="33%">
+        <strong>Supplier Account Ledger</strong><br />
+        <sub>Stock purchases, payments paid, and inward deliveries</sub><br /><br />
+        <img src="docs/images/supplier-account-ledger.jpg" width="240" alt="Factory Ledger supplier account ledger" />
+      </td>
+    </tr>
+  </table>
+</div>
+
+### Procurement, Stock & Contracts
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="33%">
+        <strong>Record Inward Stock</strong><br />
+        <sub>Truck weight, origin mine, and landed valuation</sub><br /><br />
+        <img src="docs/images/record-inward-stock.jpg" width="240" alt="Factory Ledger record inward stock voucher" />
+      </td>
+      <td align="center" width="33%">
+        <strong>Purchase Orders</strong><br />
+        <sub>Contract terms, target GCV, base rate, and commission</sub><br /><br />
+        <img src="docs/images/new-purchase-order.jpg" width="240" alt="Factory Ledger purchase order form" />
+      </td>
+      <td align="center" width="33%">
+        <strong>Stock & Inventory Sources</strong><br />
+        <sub>Commodity filters, yard stock, and active sources</sub><br /><br />
+        <img src="docs/images/inventory-sources.jpg" width="240" alt="Factory Ledger inventory and stock sources" />
+      </td>
+    </tr>
+  </table>
+</div>
+
+### Financial Entries, Ledgers & Statements
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="33%">
+        <strong>All Entries Ledger</strong><br />
+        <sub>Searchable history, sales & inward filter, and net spread</sub><br /><br />
+        <img src="docs/images/all-entries-ledger.jpg" width="240" alt="Factory Ledger all transactions ledger" />
+      </td>
+      <td align="center" width="33%">
+        <strong>Record Payment</strong><br />
+        <sub>Outflows/refunds across Bank, Cash, and Cheque</sub><br /><br />
+        <img src="docs/images/record-payment.jpg" width="240" alt="Factory Ledger payment voucher form" />
+      </td>
+      <td align="center" width="33%">
+        <strong>Operating Expenses</strong><br />
+        <sub>Depot lease, labour, utilities, and quick presets</sub><br /><br />
+        <img src="docs/images/new-expense.jpg" width="240" alt="Factory Ledger operating expense entry" />
+      </td>
+    </tr>
+  </table>
+</div>
+
+### Configuration, Materials & Settings
+
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" width="33%">
+        <strong>Account Statement Export</strong><br />
+        <sub>Period balance breakdown and PDF export</sub><br /><br />
+        <img src="docs/images/export-statement.jpg" width="240" alt="Factory Ledger statement export modal" />
+      </td>
+      <td align="center" width="33%">
+        <strong>Material Catalogue</strong><br />
+        <sub>Formula rules: GCV pro-rata, Laterite purity, etc.</sub><br /><br />
+        <img src="docs/images/material-catalogue.jpg" width="240" alt="Factory Ledger material catalogue configuration" />
+      </td>
+      <td align="center" width="33%">
+        <strong>Settings & Cloud Sync</strong><br />
+        <sub>Google Sign-In, Firebase sync, and PIN security</sub><br /><br />
+        <img src="docs/images/settings-and-sync.jpg" width="240" alt="Factory Ledger settings and cloud sync" />
+      </td>
+    </tr>
+  </table>
+</div>
+
+<details>
+  <summary><strong>More Workflows & Form Details</strong> (Counterparty onboarding, sorting, branding)</summary>
+  <br />
+  <div align="center">
+    <table>
+      <tr>
+        <td align="center" width="33%">
+          <strong>Business Profile & Branding</strong><br />
+          <sub>Trader name, entity details, and contact</sub><br /><br />
+          <img src="docs/images/business-profile-settings.jpg" width="240" alt="Factory Ledger business profile branding" />
+        </td>
+        <td align="center" width="33%">
+          <strong>Parties List View</strong><br />
+          <sub>High-density directory list layout</sub><br /><br />
+          <img src="docs/images/parties-list-view.jpg" width="240" alt="Factory Ledger parties directory list layout" />
+        </td>
+        <td align="center" width="33%">
+          <strong>Add Coal Mine / Origin</strong><br />
+          <sub>Supplier pit definition and pithead rate</sub><br /><br />
+          <img src="docs/images/add-mine-source.jpg" width="240" alt="Factory Ledger add coal mine source" />
+        </td>
+      </tr>
+      <tr>
+        <td align="center" width="33%">
+          <strong>New Party Profile</strong><br />
+          <sub>Supplier and buyer onboarding form</sub><br /><br />
+          <img src="docs/images/new-party-form.jpg" width="240" alt="Factory Ledger new party onboarding" />
+        </td>
+        <td align="center" width="33%">
+          <strong>Party Role & Commodities</strong><br />
+          <sub>Role assignment and commodity tags</sub><br /><br />
+          <img src="docs/images/party-role-selector.jpg" width="240" alt="Factory Ledger party role selector" />
+        </td>
+        <td align="center" width="33%">
+          <strong>Sort Parties Dialog</strong><br />
+          <sub>Sort by latest, balance due, or advance</sub><br /><br />
+          <img src="docs/images/parties-sort.jpg" width="240" alt="Factory Ledger party sorting modal" />
+        </td>
+      </tr>
+      <tr>
+        <td align="center" width="33%">
+          <strong>Parties Empty State</strong><br />
+          <sub>Fresh installation initial state</sub><br /><br />
+          <img src="docs/images/parties-empty.jpg" width="240" alt="Factory Ledger parties empty state" />
+        </td>
+        <td align="center" width="33%"></td>
+        <td align="center" width="33%"></td>
+      </tr>
+    </table>
+  </div>
+</details>
 
 ## What Factory Ledger Does
 

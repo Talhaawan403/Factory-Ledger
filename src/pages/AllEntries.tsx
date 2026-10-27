@@ -1,9 +1,10 @@
 import { useEffect, useState, useMemo } from 'react';
 import IOSDatePicker from '../components/IOSDatePicker';
-import { getDispatches, getParties, getPurchaseOrders, getSettings } from '../lib/db';
-import type { Dispatch, Party, PurchaseOrder, AppSettings } from '../types';
+import { getDispatches, getParties, getPurchaseOrders, getSettings, getLots, deleteLot } from '../lib/db';
+import type { Dispatch, Party, PurchaseOrder, AppSettings, InventoryLot } from '../types';
 import { calculateSettlement, calculateLedgerTotals, isDispatchPending } from '../utils/calculations';
 import { formatCurrency, formatCompactFinancial } from '../utils/currency';
+import { formatDisplayDate } from '../utils/dateUtils';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import {
     Truck,
@@ -17,19 +18,25 @@ import {
 import { playPopSound, triggerConfetti } from '../utils/delight';
 import ExportLedgerDropdown from '../components/ExportLedgerDropdown';
 import DispatchPreviewModal from '../components/DispatchPreviewModal';
+import SupplierDeliveryPreviewModal from '../components/SupplierDeliveryPreviewModal';
 import IOSSelect from '../components/IOSSelect';
+import { getMaterialForDispatch, getMaterialItems, getMaterialBadgeTheme } from '../utils/materials';
 
 export default function AllEntries() {
     const [dispatches, setDispatches] = useState<Dispatch[]>([]);
     const [parties, setParties] = useState<Party[]>([]);
+    const [lots, setLots] = useState<InventoryLot[]>([]);
     const [pos, setPos] = useState<PurchaseOrder[]>([]);
     const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
     const [loading, setLoading] = useState(true);
     const [previewDispatch, setPreviewDispatch] = useState<Dispatch | null>(null);
+    const [previewLot, setPreviewLot] = useState<InventoryLot | null>(null);
 
     // Filters
     const [searchQuery, setSearchQuery] = useState('');
+    const [entryTypeFilter, setEntryTypeFilter] = useState<'all' | 'sales' | 'inward'>('all');
     const [activeFilter, setActiveFilter] = useState<'all' | 'profit' | 'loss'>('all');
+    const [selectedMaterialId, setSelectedMaterialId] = useState<string>('all');
     const [selectedPartyId, setSelectedPartyId] = useState<string>('all');
     const [selectedPoId, setSelectedPoId] = useState<string>('all');
     const [dateFrom, setDateFrom] = useState('');
@@ -38,11 +45,12 @@ export default function AllEntries() {
     const [sortOrder, setSortOrder] = useState<'desc' | 'asc'>('desc');
 
     const loadEntries = () => {
-        Promise.all([getDispatches(), getParties(), getPurchaseOrders(), getSettings()]).then(([d, p, posData, s]) => {
+        Promise.all([getDispatches(), getParties(), getPurchaseOrders(), getSettings(), getLots()]).then(([d, p, posData, s, lotData]) => {
             setDispatches(d);
             setParties(p);
             setPos(posData);
             setSettings(s);
+            setLots(lotData);
             setLoading(false);
         });
     };
@@ -55,12 +63,16 @@ export default function AllEntries() {
         loadEntries();
     });
 
-    // Filtered entries
+    const materials = useMemo(() => getMaterialItems(settings), [settings]);
+
+    // Filtered dispatches (Sales to Buyers)
     const filteredDispatches = useMemo(() => {
+        if (entryTypeFilter === 'inward') return [];
         const result = dispatches.filter((d) => {
             const party = parties.find((p) => p.id === d.partyId);
             const po = pos.find(p => p.id === d.poId);
             const settlement = calculateSettlement(d, settings);
+            const material = getMaterialForDispatch(d, settings);
 
             // Search match
             const q = searchQuery.toLowerCase();
@@ -68,11 +80,14 @@ export default function AllEntries() {
                 !q ||
                 (d.truckNumber || '').toLowerCase().includes(q) ||
                 (party?.name || '').toLowerCase().includes(q) ||
+                (material.name || '').toLowerCase().includes(q) ||
                 (d.date || '').includes(q) ||
                 (po?.poNumber || '').toLowerCase().includes(q) ||
                 (d.coalInputs || []).some((ci) => (ci.sourceName || '').toLowerCase().includes(q));
 
-            // Dropdown filters
+            // Dropdown & pill filters
+            const dispatchMaterialId = d.itemId || 'coal';
+            const matchMaterial = selectedMaterialId === 'all' || dispatchMaterialId === selectedMaterialId;
             const matchParty = selectedPartyId === 'all' || d.partyId === selectedPartyId;
             const matchPo = selectedPoId === 'all' || d.poId === selectedPoId;
 
@@ -90,30 +105,104 @@ export default function AllEntries() {
                 matchStatus = !isPending && settlement.netProfit < 0;
             }
 
-            return matchSearch && matchParty && matchPo && matchDate && matchStatus;
+            return matchSearch && matchMaterial && matchParty && matchPo && matchDate && matchStatus;
         });
 
-        return result.sort((a, b) => {
+        return result;
+    }, [dispatches, parties, pos, settings, searchQuery, activeFilter, selectedPartyId, selectedPoId, dateFrom, dateTo, selectedMaterialId, entryTypeFilter]);
+
+    // Filtered Inward Lots (Purchases from Suppliers)
+    const filteredLots = useMemo(() => {
+        if (entryTypeFilter === 'sales') return [];
+        return lots.filter((lot) => {
+            if (lot.deleted) return false;
+            const supplier = parties.find((p) => p.id === lot.supplierId || p.name === lot.supplier);
+
+            // Search match
+            const q = searchQuery.toLowerCase();
+            const matchSearch =
+                !q ||
+                (lot.truckNumber || '').toLowerCase().includes(q) ||
+                (supplier?.name || lot.supplier || lot.boughtFrom || '').toLowerCase().includes(q) ||
+                (lot.mineName || lot.mineSource || '').toLowerCase().includes(q) ||
+                (lot.storedAt || '').toLowerCase().includes(q) ||
+                (lot.date || '').includes(q);
+
+            // Party match
+            const matchParty = selectedPartyId === 'all' || lot.supplierId === selectedPartyId || supplier?.id === selectedPartyId;
+
+            // Date Range
+            let matchDate = true;
+            if (dateFrom && lot.date < dateFrom) matchDate = false;
+            if (dateTo && lot.date > dateTo) matchDate = false;
+
+            // Material match
+            const lotMaterialId = lot.itemId || 'coal';
+            const matchMaterial = selectedMaterialId === 'all' || lotMaterialId === selectedMaterialId;
+
+            return matchSearch && matchParty && matchDate && matchMaterial;
+        });
+    }, [lots, parties, searchQuery, selectedPartyId, dateFrom, dateTo, selectedMaterialId, entryTypeFilter]);
+
+    // Unified Sorted Entries for display
+    const unifiedEntries = useMemo(() => {
+        const items: Array<{
+            kind: 'dispatch' | 'lot';
+            id: string;
+            date: string;
+            truck: string;
+            weight: number;
+            amount: number;
+            data: any;
+        }> = [];
+
+        for (const d of filteredDispatches) {
+            const settlement = calculateSettlement(d, settings);
+            const w = d.labReceivedWeight || d.coalInputs?.[0]?.weight || 0;
+            items.push({
+                kind: 'dispatch',
+                id: d.id,
+                date: d.date,
+                truck: d.truckNumber || '',
+                weight: w,
+                amount: settlement.totalRevenue,
+                data: d,
+            });
+        }
+
+        for (const l of filteredLots) {
+            const w = Number(l.receivedWeight || l.billedWeight || l.tonnage || 0);
+            const r = Number(l.purchaseRate || l.ratePerTon || 0);
+            const f = Number(l.freightCost || 0);
+            const amt = l.totalValue !== undefined ? Number(l.totalValue) : w * r + f;
+            items.push({
+                kind: 'lot',
+                id: l.id,
+                date: l.date,
+                truck: l.truckNumber || '',
+                weight: w,
+                amount: amt,
+                data: l,
+            });
+        }
+
+        return items.sort((a, b) => {
             let diff = 0;
             if (sortBy === 'date') {
                 const timeA = a.date ? new Date(a.date).getTime() : 0;
                 const timeB = b.date ? new Date(b.date).getTime() : 0;
                 diff = timeB - timeA;
             } else if (sortBy === 'truck') {
-                diff = (a.truckNumber || '').localeCompare(b.truckNumber || '');
+                diff = a.truck.localeCompare(b.truck);
                 return sortOrder === 'asc' ? diff : -diff;
             } else if (sortBy === 'weight') {
-                const wA = a.labReceivedWeight || a.coalInputs?.[0]?.weight || 0;
-                const wB = b.labReceivedWeight || b.coalInputs?.[0]?.weight || 0;
-                diff = wB - wA;
+                diff = b.weight - a.weight;
             } else if (sortBy === 'revenue') {
-                const rA = calculateSettlement(a, settings).totalRevenue;
-                const rB = calculateSettlement(b, settings).totalRevenue;
-                diff = rB - rA;
+                diff = b.amount - a.amount;
             }
             return sortOrder === 'desc' ? diff : -diff;
         });
-    }, [dispatches, parties, pos, settings, searchQuery, activeFilter, selectedPartyId, selectedPoId, dateFrom, dateTo, sortBy, sortOrder]);
+    }, [filteredDispatches, filteredLots, sortBy, sortOrder, settings]);
 
     // Live Aggregations for Filtered Dispatches using unified calculateLedgerTotals (Issue 20)
     const ledgerTotals = useMemo(() => {
@@ -152,30 +241,48 @@ export default function AllEntries() {
     return (
         <div className="ios-fade-in" style={{ paddingBottom: 32 }}>
             {/* ── iOS Navigation Bar with Large Title ── */}
-            <div className="ios-large-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <div>
-                    <span className="ios-section-header" style={{ padding: 0 }}>
-                        {dispatches.length} TOTAL DISPATCHES
-                    </span>
-                    <h1 className="ios-large-title">All Entries</h1>
-                </div>
+            <div className="ios-large-header" style={{ paddingBottom: 10 }}>
+                {/* Title & Action Row */}
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                    <h1 className="ios-large-title" style={{ margin: 0, lineHeight: 1.15 }}>
+                        All Entries
+                    </h1>
 
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <ExportLedgerDropdown
                         dispatches={filteredDispatches}
                         parties={parties}
                         pos={pos}
                         title="ALL DISPATCHES LEDGER"
                         subtitle={`Filtered: ${filteredDispatches.length} Entries • ${filteredTons.toFixed(1)} Tons`}
+                        dateRange={dateFrom && dateTo ? `${formatDisplayDate(dateFrom)} – ${formatDisplayDate(dateTo)}` : dateFrom ? `From ${formatDisplayDate(dateFrom)}` : dateTo ? `Through ${formatDisplayDate(dateTo)}` : undefined}
                         buttonLabel="Export Ledger"
                     />
-                    {/* <button
-                        onClick={handleAddNew}
-                        className="ios-nav-circle-btn"
-                        title="Create New Dispatch"
-                    >
-                        <Plus style={{ width: 20, height: 20 }} strokeWidth={2.6} />
-                    </button> */}
+                </div>
+
+                {/* Polished Subtitle Stats Row */}
+                <div
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        marginTop: 4,
+                        fontSize: 13,
+                        color: 'var(--label-secondary)',
+                        fontWeight: 500,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                    }}
+                >
+                    <span>{dispatches.length + lots.length} Total Transactions</span>
+                    <span style={{ color: 'var(--label-tertiary)' }}>·</span>
+                    <span style={{ color: 'var(--ios-blue)', fontWeight: 600 }}>
+                        {dispatches.length} Sales
+                    </span>
+                    <span style={{ color: 'var(--label-tertiary)' }}>·</span>
+                    <span style={{ color: '#FF9500', fontWeight: 600 }}>
+                        {lots.length} Inward
+                    </span>
                 </div>
             </div>
 
@@ -205,6 +312,66 @@ export default function AllEntries() {
                             Clear
                         </button>
                     )}
+                </div>
+            </div>
+
+            {/* ── Entry Type Segment (All vs Sales vs Inward) ── */}
+            <div style={{ padding: '0 16px 10px' }}>
+                <div style={{ display: 'flex', background: 'var(--fill-tertiary)', padding: 3, borderRadius: 10 }}>
+                    <button
+                        type="button"
+                        onClick={() => { playPopSound(); setEntryTypeFilter('all'); }}
+                        style={{
+                            flex: 1,
+                            padding: '6px 0',
+                            border: 'none',
+                            borderRadius: 8,
+                            fontSize: 13,
+                            fontWeight: 600,
+                            background: entryTypeFilter === 'all' ? 'var(--bg-card)' : 'transparent',
+                            color: entryTypeFilter === 'all' ? 'var(--label-primary)' : 'var(--label-secondary)',
+                            boxShadow: entryTypeFilter === 'all' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        All ({dispatches.length + lots.length})
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => { playPopSound(); setEntryTypeFilter('sales'); }}
+                        style={{
+                            flex: 1,
+                            padding: '6px 0',
+                            border: 'none',
+                            borderRadius: 8,
+                            fontSize: 13,
+                            fontWeight: 600,
+                            background: entryTypeFilter === 'sales' ? 'var(--bg-card)' : 'transparent',
+                            color: entryTypeFilter === 'sales' ? 'var(--ios-blue)' : 'var(--label-secondary)',
+                            boxShadow: entryTypeFilter === 'sales' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        Sales ({dispatches.length})
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => { playPopSound(); setEntryTypeFilter('inward'); }}
+                        style={{
+                            flex: 1,
+                            padding: '6px 0',
+                            border: 'none',
+                            borderRadius: 8,
+                            fontSize: 13,
+                            fontWeight: 600,
+                            background: entryTypeFilter === 'inward' ? 'var(--bg-card)' : 'transparent',
+                            color: entryTypeFilter === 'inward' ? '#FF9500' : 'var(--label-secondary)',
+                            boxShadow: entryTypeFilter === 'inward' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                            cursor: 'pointer'
+                        }}
+                    >
+                        Inward ({lots.length})
+                    </button>
                 </div>
             </div>
 
@@ -350,8 +517,46 @@ export default function AllEntries() {
                 </div>
             </div>
 
-            {/* ── Filter By Party & PO Horizontal Scroll ── */}
+            {/* ── Filter By Material, Party & PO Horizontal Scroll ── */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '0 16px 12px' }}>
+                {/* Material Pills */}
+                <div style={{ display: 'flex', gap: 8, overflowX: 'auto', scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}>
+                    <button
+                        onClick={() => { playPopSound(); setSelectedMaterialId('all'); }}
+                        style={{
+                            padding: '6px 14px', borderRadius: 16, border: 'none', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', cursor: 'pointer',
+                            background: selectedMaterialId === 'all' ? 'var(--ios-blue)' : 'var(--fill-primary)',
+                            color: selectedMaterialId === 'all' ? '#FFFFFF' : 'var(--label-secondary)'
+                        }}
+                    >
+                        All Materials
+                    </button>
+                    {materials.map((m) => {
+                        const isSelected = selectedMaterialId === m.id;
+                        const theme = getMaterialBadgeTheme(m.id);
+                        return (
+                            <button
+                                key={m.id}
+                                onClick={() => { playPopSound(); setSelectedMaterialId(m.id); }}
+                                style={{
+                                    padding: '6px 14px',
+                                    borderRadius: 16,
+                                    border: isSelected ? 'none' : `1px solid ${theme.border}`,
+                                    fontSize: 13,
+                                    fontWeight: 600,
+                                    whiteSpace: 'nowrap',
+                                    cursor: 'pointer',
+                                    background: isSelected ? theme.color : 'var(--fill-primary)',
+                                    color: isSelected ? '#FFFFFF' : 'var(--label-primary)'
+                                }}
+                            >
+                                {m.name}
+                            </button>
+                        );
+                    })}
+                </div>
+
+                {/* Factory Pills */}
                 <div style={{ display: 'flex', gap: 8, overflowX: 'auto', scrollbarWidth: 'none', WebkitOverflowScrolling: 'touch' }}>
                     <button
                         onClick={() => { setSelectedPartyId('all'); setSelectedPoId('all'); }}
@@ -547,101 +752,348 @@ export default function AllEntries() {
 
             {/* ── Inset Grouped Entries List ── */}
             <div className="ios-group">
-                <div className="ios-group-title">Date • Truck • Factory • PO • Weight • GCV • Profit/Loss</div>
+                <div className="ios-group-title">
+                    {entryTypeFilter === 'sales'
+                        ? `Sales (${unifiedEntries.length})`
+                        : entryTypeFilter === 'inward'
+                            ? `Inward Deliveries (${unifiedEntries.length})`
+                            : `Transactions (${unifiedEntries.length})`}
+                </div>
                 <div className="ios-card-grouped">
-                    {filteredDispatches.length === 0 ? (
+                    {unifiedEntries.length === 0 ? (
                         <div style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--label-secondary)' }}>
                             <Truck style={{ width: 40, height: 40, margin: '0 auto 10px', opacity: 0.35 }} strokeWidth={1.5} />
                             <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>No Entries Found</div>
                         </div>
                     ) : (
-                        filteredDispatches.map((dispatch, idx) => {
-                            const party = parties.find((p) => p.id === dispatch.partyId);
-                            const po = pos.find(p => p.id === dispatch.poId);
-                            const settlement = calculateSettlement(dispatch, settings);
-                            const isPending = isDispatchPending(dispatch);
-                            const isProfit = settlement.netProfit >= 0;
-
-                            const dateParts = (dispatch.date || '').split('-');
+                        unifiedEntries.map((entry, idx) => {
+                            const dateParts = (entry.date || '').split('-');
                             const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
                             const monthStr = dateParts.length === 3 ? (monthNames[parseInt(dateParts[1], 10) - 1] || '---') : '---';
                             const dayStr = dateParts.length === 3 ? parseInt(dateParts[2], 10) : '--';
 
-                            return (
-                                <div
-                                    key={dispatch.id}
-                                    className="ios-cell"
-                                    onClick={() => {
-                                        playPopSound();
-                                        setPreviewDispatch(dispatch);
-                                    }}
-                                >
+                            if (entry.kind === 'dispatch') {
+                                const dispatch = entry.data as Dispatch;
+                                const party = parties.find((p) => p.id === dispatch.partyId);
+                                const po = pos.find(p => p.id === dispatch.poId);
+                                const settlement = calculateSettlement(dispatch, settings);
+                                const isPending = isDispatchPending(dispatch);
+                                const isProfit = settlement.netProfit >= 0;
+                                const material = getMaterialForDispatch(dispatch, settings);
+                                const badgeTheme = getMaterialBadgeTheme(material.id);
+                                const monthColor = isPending ? '#FF9500' : isProfit ? 'var(--ios-green)' : 'var(--ios-red)';
+
+                                const specInfo = material.pricingModel === 'gcv'
+                                    ? (dispatch.labActualGcv ? `GCV ${dispatch.labActualGcv}` : dispatch.targetGcv ? `Target ${dispatch.targetGcv}` : null)
+                                    : material.pricingModel === 'purity'
+                                        ? (dispatch.receivedQuality !== undefined && dispatch.receivedQuality !== null ? `${material.qualityLabel || 'Purity'} ${dispatch.receivedQuality}%` : null)
+                                        : null;
+
+                                return (
                                     <div
-                                        style={{
-                                            width: 44,
-                                            height: 44,
-                                            borderRadius: 10,
-                                            background: 'var(--fill-tertiary)',
-                                            display: 'flex',
-                                            flexDirection: 'column',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            marginRight: 14,
-                                            flexShrink: 0,
-                                            border: '0.5px solid var(--separator)'
+                                        key={dispatch.id}
+                                        className="ios-cell"
+                                        onClick={() => {
+                                            playPopSound();
+                                            setPreviewDispatch(dispatch);
                                         }}
+                                        style={{ cursor: 'pointer', padding: '12px 16px' }}
                                     >
-                                        <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--ios-red)', letterSpacing: 0.3 }}>
-                                            {monthStr}
-                                        </span>
-                                        <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)', lineHeight: 1 }}>
-                                            {dayStr}
-                                        </span>
+                                        {/* iOS Calendar Tile Date Badge (Identical to PartyLedger) */}
+                                        <div
+                                            style={{
+                                                width: 44,
+                                                height: 44,
+                                                borderRadius: 10,
+                                                background: 'var(--fill-tertiary)',
+                                                display: 'flex',
+                                                flexDirection: 'column',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                marginRight: 14,
+                                                flexShrink: 0,
+                                                border: '0.5px solid var(--separator)'
+                                            }}
+                                        >
+                                            <span style={{ fontSize: 9, fontWeight: 700, color: monthColor, letterSpacing: 0.3 }}>
+                                                {monthStr}
+                                            </span>
+                                            <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)', lineHeight: 1 }}>
+                                                {dayStr}
+                                            </span>
+                                        </div>
+
+                                        <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+                                            {/* Top Row: Truck Number + Clean Badges | Financial Status */}
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden' }}>
+                                                    <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', whiteSpace: 'nowrap' }}>
+                                                        {dispatch.truckNumber}
+                                                    </span>
+                                                    <span
+                                                        style={{
+                                                            fontSize: 10,
+                                                            fontWeight: 700,
+                                                            color: 'var(--ios-blue)',
+                                                            background: 'rgba(0, 122, 255, 0.12)',
+                                                            padding: '1.5px 6px',
+                                                            borderRadius: 4,
+                                                            letterSpacing: '0.3px',
+                                                            flexShrink: 0
+                                                        }}
+                                                    >
+                                                        SALE
+                                                    </span>
+                                                    {material?.name && (
+                                                        <span
+                                                            style={{
+                                                                fontSize: 10,
+                                                                fontWeight: 650,
+                                                                color: badgeTheme.color,
+                                                                background: badgeTheme.bg,
+                                                                border: `0.5px solid ${badgeTheme.border}`,
+                                                                padding: '1.5px 6px',
+                                                                borderRadius: 4,
+                                                                flexShrink: 0
+                                                            }}
+                                                        >
+                                                            {material.name}
+                                                        </span>
+                                                    )}
+                                                    {isPending && (
+                                                        <span
+                                                            style={{
+                                                                fontSize: 10,
+                                                                fontWeight: 700,
+                                                                color: '#FF9500',
+                                                                background: 'rgba(255, 149, 0, 0.12)',
+                                                                padding: '1.5px 6px',
+                                                                borderRadius: 4,
+                                                                letterSpacing: '0.3px',
+                                                                flexShrink: 0
+                                                            }}
+                                                        >
+                                                            IN TRANSIT
+                                                        </span>
+                                                    )}
+                                                </div>
+
+                                                <span
+                                                    style={{
+                                                        fontSize: 15,
+                                                        fontWeight: 700,
+                                                        color: isPending ? '#FF9500' : isProfit ? 'var(--ios-green)' : 'var(--ios-red)',
+                                                        flexShrink: 0,
+                                                        whiteSpace: 'nowrap'
+                                                    }}
+                                                    className="tabular-nums"
+                                                >
+                                                    {isPending
+                                                        ? `Cost −${formatCurrency(settlement.totalCost, settings)}`
+                                                        : formatCurrency(settlement.netProfit, settings, { showSign: true })}
+                                                </span>
+                                            </div>
+
+                                            {/* Subtitle Row: Factory • PO · Weight · Specs | Revenue or Status */}
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 3, gap: 8 }}>
+                                                <span
+                                                    style={{
+                                                        fontSize: 13,
+                                                        color: 'var(--label-secondary)',
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: 6,
+                                                        minWidth: 0,
+                                                        overflow: 'hidden',
+                                                        textOverflow: 'ellipsis',
+                                                        whiteSpace: 'nowrap'
+                                                    }}
+                                                >
+                                                    <span style={{ fontWeight: 500, color: 'var(--label-secondary)', whiteSpace: 'nowrap' }}>
+                                                        {party?.name || dispatch.factoryName || 'Factory'}
+                                                        {po ? ` • ${po.poNumber}` : ''}
+                                                    </span>
+                                                    <span style={{ color: 'var(--label-tertiary)' }}>·</span>
+                                                    <span style={{ whiteSpace: 'nowrap' }}>
+                                                        {isPending ? `${dispatch.coalInputs?.[0]?.weight || 0} t loaded` : `${dispatch.labReceivedWeight || 0} t`}
+                                                    </span>
+                                                    {specInfo && (
+                                                        <>
+                                                            <span style={{ color: 'var(--label-tertiary)' }}>·</span>
+                                                            <span style={{ whiteSpace: 'nowrap', color: 'var(--label-secondary)' }}>{specInfo}</span>
+                                                        </>
+                                                    )}
+                                                </span>
+
+                                                <span
+                                                    style={{
+                                                        fontSize: 12,
+                                                        fontWeight: 500,
+                                                        color: 'var(--label-tertiary)',
+                                                        flexShrink: 0,
+                                                        whiteSpace: 'nowrap'
+                                                    }}
+                                                    className="tabular-nums"
+                                                >
+                                                    {isPending ? 'Pending Weighbridge' : `Rev: ${formatCurrency(settlement.totalRevenue, settings)}`}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        <ChevronRight className="ios-chevron" strokeWidth={2.5} style={{ flexShrink: 0 }} />
+                                        {idx < unifiedEntries.length - 1 && <div className="ios-separator with-glyph" style={{ left: 74 }} />}
                                     </div>
+                                );
+                            } else {
+                                const lot = entry.data as InventoryLot;
+                                const supplier = parties.find((p) => p.id === lot.supplierId || p.name === lot.supplier);
+                                const weight = Number(lot.receivedWeight || lot.billedWeight || lot.tonnage || 0);
+                                const rate = Number(lot.purchaseRate || lot.ratePerTon || 0);
+                                const freight = Number(lot.freightCost || 0);
+                                const totalAmt = lot.totalValue !== undefined ? Number(lot.totalValue) : weight * rate + freight;
+                                const landed = weight > 0 ? (lot.landedRate || totalAmt / weight) : rate;
+                                const monthColor = '#FF9500';
 
-                                    <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                                            <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>
-                                                {dispatch.truckNumber}
+                                return (
+                                    <div
+                                        key={lot.id}
+                                        className="ios-cell"
+                                        onClick={() => {
+                                            playPopSound();
+                                            setPreviewLot(lot);
+                                        }}
+                                        style={{ cursor: 'pointer', padding: '12px 16px' }}
+                                    >
+                                        {/* iOS Calendar Tile Date Badge (Identical to PartyLedger) */}
+                                        <div
+                                            style={{
+                                                width: 44,
+                                                height: 44,
+                                                borderRadius: 10,
+                                                background: 'var(--fill-tertiary)',
+                                                display: 'flex',
+                                                flexDirection: 'column',
+                                                alignItems: 'center',
+                                                justifyContent: 'center',
+                                                marginRight: 14,
+                                                flexShrink: 0,
+                                                border: '0.5px solid var(--separator)'
+                                            }}
+                                        >
+                                            <span style={{ fontSize: 9, fontWeight: 700, color: monthColor, letterSpacing: 0.3 }}>
+                                                {monthStr}
                                             </span>
-                                            <span
-                                                style={{
-                                                    fontSize: 16,
-                                                    fontWeight: 700,
-                                                    color: isPending ? 'var(--ios-blue)' : isProfit ? 'var(--ios-green)' : 'var(--ios-red)'
-                                                }}
-                                                className="tabular-nums"
-                                            >
-                                                {isPending ? `Cost −${formatCurrency(settlement.totalCost, settings)}` : formatCurrency(settlement.netProfit, settings, { showSign: true })}
+                                            <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)', lineHeight: 1 }}>
+                                                {dayStr}
                                             </span>
                                         </div>
 
-                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-                                            <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>
-                                                {party?.name || dispatch.factoryName} {po ? `• ${po.poNumber}` : ''}
-                                            </span>
+                                        <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+                                            {/* Top Row: Truck Number + INWARD + Location | Total Amount */}
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden' }}>
+                                                    <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', whiteSpace: 'nowrap' }}>
+                                                        {lot.truckNumber || 'Inward Delivery'}
+                                                    </span>
+                                                    <span
+                                                        style={{
+                                                            fontSize: 10,
+                                                            fontWeight: 700,
+                                                            background: 'rgba(255, 149, 0, 0.12)',
+                                                            color: '#FF9500',
+                                                            padding: '1.5px 6px',
+                                                            borderRadius: 4,
+                                                            letterSpacing: '0.3px',
+                                                            flexShrink: 0
+                                                        }}
+                                                    >
+                                                        INWARD
+                                                    </span>
+                                                    {lot.storedAt && (
+                                                        <span
+                                                            style={{
+                                                                fontSize: 10,
+                                                                fontWeight: 600,
+                                                                color: 'var(--label-secondary)',
+                                                                background: 'var(--fill-tertiary)',
+                                                                padding: '1.5px 6px',
+                                                                borderRadius: 4,
+                                                                flexShrink: 0
+                                                            }}
+                                                        >
+                                                            {lot.storedAt}
+                                                        </span>
+                                                    )}
+                                                </div>
+
+                                                <span
+                                                    style={{
+                                                        fontSize: 15,
+                                                        fontWeight: 700,
+                                                        color: 'var(--label-primary)',
+                                                        flexShrink: 0,
+                                                        whiteSpace: 'nowrap'
+                                                    }}
+                                                    className="tabular-nums"
+                                                >
+                                                    {formatCurrency(totalAmt, settings)}
+                                                </span>
+                                            </div>
+
+                                            {/* Subtitle Row: Supplier · Weight · Buy Rate | Landed rate or freight */}
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 3, gap: 8 }}>
+                                                <span
+                                                    style={{
+                                                        fontSize: 13,
+                                                        color: 'var(--label-secondary)',
+                                                        display: 'flex',
+                                                        alignItems: 'center',
+                                                        gap: 6,
+                                                        minWidth: 0,
+                                                        overflow: 'hidden',
+                                                        textOverflow: 'ellipsis',
+                                                        whiteSpace: 'nowrap'
+                                                    }}
+                                                >
+                                                    <span style={{ fontWeight: 500, color: 'var(--label-secondary)', whiteSpace: 'nowrap' }}>
+                                                        {supplier?.name || lot.supplier || lot.boughtFrom || 'Supplier'}
+                                                    </span>
+                                                    <span style={{ color: 'var(--label-tertiary)' }}>·</span>
+                                                    <span style={{ whiteSpace: 'nowrap' }}>
+                                                        {weight.toFixed(2)} t
+                                                    </span>
+                                                    <span style={{ color: 'var(--label-tertiary)' }}>·</span>
+                                                    <span style={{ whiteSpace: 'nowrap' }}>
+                                                        @{formatCurrency(rate, settings)}/t
+                                                    </span>
+                                                </span>
+
+                                                <span
+                                                    style={{
+                                                        fontSize: 12,
+                                                        fontWeight: 500,
+                                                        color: 'var(--label-tertiary)',
+                                                        flexShrink: 0,
+                                                        whiteSpace: 'nowrap'
+                                                    }}
+                                                    className="tabular-nums"
+                                                >
+                                                    {freight > 0 ? `Landed: ${formatCurrency(landed, settings)}/t` : `Fare: Nil`}
+                                                </span>
+                                            </div>
                                         </div>
 
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                                            <span style={{ fontSize: 11, fontWeight: 600, color: 'white', background: 'var(--ios-blue)', padding: '1px 6px', borderRadius: 4 }}>
-                                                {isPending ? 'IN TRANSIT' : `${dispatch.labReceivedWeight} t`}
-                                            </span>
-                                            <span style={{ fontSize: 11, fontWeight: 600, color: 'white', background: 'var(--ios-orange)', padding: '1px 6px', borderRadius: 4 }}>
-                                                GCV: {dispatch.labActualGcv}
-                                            </span>
-                                        </div>
+                                        <ChevronRight className="ios-chevron" strokeWidth={2.5} style={{ flexShrink: 0 }} />
+                                        {idx < unifiedEntries.length - 1 && <div className="ios-separator with-glyph" style={{ left: 74 }} />}
                                     </div>
-
-                                    <ChevronRight className="ios-chevron" strokeWidth={2.5} />
-                                    {idx < filteredDispatches.length - 1 && <div className="ios-separator with-glyph" />}
-                                </div>
-                            );
+                                );
+                            }
                         })
                     )}
                 </div>
             </div>
 
-            {/* ── Global Dispatch Preview Modal ── */}
+            {/* ── Global Dispatch Preview Modal (Buyer Sales) ── */}
             <DispatchPreviewModal
                 dispatch={previewDispatch}
                 onClose={() => setPreviewDispatch(null)}
@@ -650,6 +1102,19 @@ export default function AllEntries() {
                 settings={settings}
             />
 
+            {/* ── Supplier Delivery Preview Modal (Supplier Inward) ── */}
+            <SupplierDeliveryPreviewModal
+                lot={previewLot}
+                onClose={() => setPreviewLot(null)}
+                parties={parties}
+                settings={settings}
+                showParty={true}
+                onDelete={async (lotToDelete) => {
+                    await deleteLot(lotToDelete.id);
+                    setPreviewLot(null);
+                    loadEntries();
+                }}
+            />
 
         </div>
     );

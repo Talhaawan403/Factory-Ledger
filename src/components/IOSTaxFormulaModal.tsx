@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { Calculator, Check, Percent, FileText } from 'lucide-react';
 import { useRefraction } from '../hooks/useRefraction';
 import { playPopSound, playSuccessSound } from '../utils/delight';
+import { stripNonNumeric } from '../utils/numberFormat';
 import type { TaxMethod } from '../types';
 
 export interface IOSTaxFormulaModalProps {
@@ -323,12 +324,20 @@ export default function IOSTaxFormulaModal({
                     }}
                   >
                     <input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      max="100"
+                      type="text"
+                      inputMode="decimal"
+                      pattern="[0-9.]*"
                       value={salesPercent}
-                      onChange={(e) => setSalesPercent(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (
+                          ['Backspace', 'Delete', 'Tab', 'Escape', 'Enter', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) ||
+                          e.ctrlKey || e.metaKey
+                        ) return;
+                        if (e.key >= '0' && e.key <= '9') return;
+                        if (e.key === '.' && !e.currentTarget.value.includes('.')) return;
+                        e.preventDefault();
+                      }}
+                      onChange={(e) => setSalesPercent(stripNonNumeric(e.target.value, true, false))}
                       style={{
                         width: '100%',
                         border: 'none',
@@ -372,12 +381,20 @@ export default function IOSTaxFormulaModal({
                     }}
                   >
                     <input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      max="100"
+                      type="text"
+                      inputMode="decimal"
+                      pattern="[0-9.]*"
                       value={incomePercent}
-                      onChange={(e) => setIncomePercent(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (
+                          ['Backspace', 'Delete', 'Tab', 'Escape', 'Enter', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) ||
+                          e.ctrlKey || e.metaKey
+                        ) return;
+                        if (e.key >= '0' && e.key <= '9') return;
+                        if (e.key === '.' && !e.currentTarget.value.includes('.')) return;
+                        e.preventDefault();
+                      }}
+                      onChange={(e) => setIncomePercent(stripNonNumeric(e.target.value, true, false))}
                       style={{
                         width: '100%',
                         border: 'none',

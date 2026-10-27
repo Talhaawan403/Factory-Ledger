@@ -6,7 +6,7 @@ import { PaymentReceipt } from '../src/components/PaymentReceipt';
 import type { AppSettings, Dispatch, Party, Payment } from '../src/types';
 
 const settings: AppSettings = {
-  userName: 'Talha Awan',
+  userName: 'Demo Trader',
   businessName: 'Indus Coal Traders & Logistics',
   phoneNumber: '0300-1234567',
   logoUrl: '',
@@ -98,6 +98,37 @@ describe('receipt image documents', () => {
     expect(html).toContain('Revenue Not Yet Recognized');
     expect(html).toContain('cost already posted to books');
     expect(html).not.toContain('Total Settlement Revenue');
+  });
+
+  it('renders Laterite purity terms from the saved dispatch snapshot', () => {
+    const html = renderToStaticMarkup(
+      <DispatchReceipt
+        dispatch={dispatch({
+          itemId: 'material-laterite',
+          itemName: 'Laterite',
+          pricingModel: 'purity',
+          qualityLabel: 'Purity',
+          qualityUnit: '%',
+          ratePerQualityUnit: 116,
+          receivedQuality: 30,
+          baseRate: 3480,
+          labActualGcv: 0,
+          labSulphur: 0,
+          coalInputs: [{ id: 'source-1', sourceName: 'Laterite Supplier', weight: 40, purchaseRate: 2500 }],
+        })}
+        party={party}
+        settings={settings}
+      />,
+    );
+
+    expect(html).toContain('Laterite Dispatch');
+    expect(html).toContain('Factory received Purity');
+    expect(html).toContain('30 %');
+    expect(html).toContain('Rate per Purity point');
+    expect(html).toContain('PKR 116.00');
+    expect(html).toContain('Purity-derived rate');
+    expect(html).toContain('PKR 3,480.00 / ton');
+    expect(html).not.toContain('Actual GCV');
   });
 
   it('labels incoming payments and positive closing balances correctly', () => {

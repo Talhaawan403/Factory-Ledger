@@ -84,31 +84,46 @@ service cloud.firestore {
     }
 
     function optionalNonNegativeNumber(field) {
-      return !(field in request.resource.data) || hasNonNegativeNumber(field);
+      return !(field in request.resource.data) ||
+             request.resource.data[field] == null ||
+             hasNonNegativeNumber(field);
     }
 
     function optionalEpochMillis(field) {
-      return !(field in request.resource.data) || hasEpochMillis(field);
+      return !(field in request.resource.data) ||
+             request.resource.data[field] == null ||
+             hasEpochMillis(field);
     }
 
     function optionalText(field) {
-      return !(field in request.resource.data) || hasText(field);
+      return !(field in request.resource.data) ||
+             request.resource.data[field] == null ||
+             hasText(field);
     }
 
     function optionalDate(field) {
-      return !(field in request.resource.data) || hasDate(field);
+      return !(field in request.resource.data) ||
+             request.resource.data[field] == null ||
+             hasDate(field);
     }
 
     function optionalNonEmptyText(field) {
-      return !(field in request.resource.data) || hasNonEmptyText(field);
+      return !(field in request.resource.data) ||
+             request.resource.data[field] == null ||
+             request.resource.data[field] == '' ||
+             hasNonEmptyText(field);
     }
 
     function optionalBoolean(field) {
-      return !(field in request.resource.data) || request.resource.data[field] is bool;
+      return !(field in request.resource.data) ||
+             request.resource.data[field] == null ||
+             request.resource.data[field] is bool;
     }
 
     function optionalEnum(field, allowed) {
-      return !(field in request.resource.data) || request.resource.data[field] in allowed;
+      return !(field in request.resource.data) ||
+             request.resource.data[field] == null ||
+             request.resource.data[field] in allowed;
     }
 
     // Sync occasionally writes a compact tombstone. It must remain legal so an
@@ -133,9 +148,13 @@ service cloud.firestore {
 
     function isValidParty() {
       return isSoftDelete() ||
-             (hasNonEmptyText('name') && hasText('contactPerson') && hasText('phone') &&
-              hasText('address') && hasEpochMillis('createdAt') &&
-              optionalBoolean('isArchived'));
+             (hasNonEmptyText('name') && optionalText('contactPerson') && optionalText('phone') &&
+              optionalText('address') && hasEpochMillis('createdAt') &&
+              optionalEnum('type', ['buyer', 'supplier']) &&
+              optionalBoolean('isArchived') &&
+              optionalBoolean('isDirectMine') &&
+              optionalNonEmptyText('linkedMineId') &&
+              optionalText('notes'));
     }
 
     function isValidPayment() {
@@ -144,6 +163,8 @@ service cloud.firestore {
               optionalText('referenceNote') &&
               optionalEnum('type', ['received', 'paid']) &&
               optionalEnum('mode', ['bank', 'cash', 'cheque', 'online']) &&
+              optionalNonEmptyText('supplierId') &&
+              optionalNonEmptyText('mineId') &&
               hasEpochMillis('createdAt'));
     }
 
@@ -163,6 +184,10 @@ service cloud.firestore {
               hasNonNegativeNumber('commissionPerTon') && hasEpochMillis('createdAt') &&
               'isActive' in request.resource.data && request.resource.data.isActive is bool &&
               optionalNonNegativeNumber('totalTons') && optionalText('notes') &&
+              optionalNonEmptyText('itemId') && optionalNonEmptyText('itemName') &&
+              optionalEnum('pricingModel', ['gcv', 'purity', 'flat']) &&
+              optionalText('qualityLabel') && optionalText('qualityUnit') &&
+              optionalNonNegativeNumber('ratePerQualityUnit') &&
               optionalEnum('gcvAdjustment', ['manual', 'prorata']) &&
               optionalEnum('gcvAdjustmentRounding', ['rupee', 'paisa']));
     }
@@ -174,13 +199,16 @@ service cloud.firestore {
               hasPositiveNumber('purchaseRate') && hasNonNegativeNumber('landedRate') &&
               hasEpochMillis('createdAt') &&
               optionalNonEmptyText('mineId') && optionalText('mineName') &&
+              optionalNonEmptyText('itemId') && optionalNonEmptyText('itemName') &&
+              optionalNonEmptyText('supplierId') &&
               optionalNonNegativeNumber('loadingCost') && optionalNonNegativeNumber('freightCost'));
     }
 
     function isValidMine() {
       return isSoftDelete() ||
              (hasNonEmptyText('name') && hasNonNegativeNumber('ratePerTon') &&
-              hasEpochMillis('createdAt') && optionalText('location') && optionalText('notes'));
+              hasEpochMillis('createdAt') && optionalText('location') && optionalText('notes') &&
+              optionalText('phone') && optionalNonEmptyText('defaultSupplierId'));
     }
 
     function isValidDispatch() {
@@ -193,6 +221,10 @@ service cloud.firestore {
               'coalInputs' in request.resource.data && request.resource.data.coalInputs is list &&
               request.resource.data.coalInputs.size() <= 30 &&
               optionalNonEmptyText('poId') && optionalNonNegativeNumber('commissionPerTon') &&
+              optionalNonEmptyText('itemId') && optionalNonEmptyText('itemName') &&
+              optionalEnum('pricingModel', ['gcv', 'purity', 'flat']) &&
+              optionalText('qualityLabel') && optionalText('qualityUnit') &&
+              optionalNonNegativeNumber('ratePerQualityUnit') && optionalNonNegativeNumber('receivedQuality') &&
               optionalEnum('gcvAdjustment', ['manual', 'prorata']) &&
               optionalEnum('gcvAdjustmentRounding', ['rupee', 'paisa']) &&
               optionalEnum('taxMethod', ['manual', 'formula_18_5']) &&

@@ -5,6 +5,30 @@ export interface CoalInput {
   purchaseRate: number;
   mineId?: string;
   lotId?: string;
+  supplierId?: string;
+}
+
+export type MaterialPricingModel = 'gcv' | 'purity' | 'flat';
+
+export interface MaterialDefinition {
+  id: string;
+  name: string;
+  pricingModel: MaterialPricingModel;
+  qualityLabel?: string;
+  qualityUnit?: string;
+  defaultRate?: number;
+  isActive?: boolean;
+  isSystem?: boolean;
+}
+
+export interface SupplierProfile {
+  id: string;
+  name: string;
+  contactPerson?: string;
+  phone?: string;
+  address?: string;
+  materialIds?: string[];
+  isArchived?: boolean;
 }
 
 export interface OverheadExpenses {
@@ -22,6 +46,12 @@ export interface PurchaseOrder {
   targetGcv: number;
   baseRate: number;
   commissionPerTon: number;
+  itemId?: string;
+  itemName?: string;
+  pricingModel?: MaterialPricingModel;
+  qualityLabel?: string;
+  qualityUnit?: string;
+  ratePerQualityUnit?: number;
   totalTons?: number;
   notes?: string;
   gcvAdjustment?: 'manual' | 'prorata';
@@ -41,6 +71,13 @@ export interface Dispatch {
   date: string;
   truckNumber: string;
   factoryName: string;
+  itemId?: string;
+  itemName?: string;
+  pricingModel?: MaterialPricingModel;
+  qualityLabel?: string;
+  qualityUnit?: string;
+  ratePerQualityUnit?: number;
+  receivedQuality?: number;
   targetGcv: number;
   baseRate: number;
   commissionPerTon?: number;
@@ -59,7 +96,8 @@ export interface Dispatch {
   gcvAdjustmentRounding?: 'rupee' | 'paisa';
   taxMethod?: TaxMethod;
   taxSalesPercent?: number; // Snapshot of sales tax % (e.g. 18) when dispatch was saved
-  taxIncomePercent?: number; // Snapshot of income tax % (e.g. 5) when dispatch was saved
+  taxIncomePercent?: number; // Snapshot of income tax % (e.g. 5 or 5.5) when dispatch was saved
+  dieselRateAdjustment?: number; // Diesel Escalation / De-escalation adjustment per ton (+ for premium, - for deduction)
   notes?: string;
   status?: DispatchStatus;
   settledAt?: number;
@@ -81,6 +119,11 @@ export interface Party {
   contactPerson: string;
   phone: string;
   address: string;
+  type?: 'buyer' | 'supplier';
+  materialIds?: string[];
+  notes?: string;
+  isDirectMine?: boolean;
+  linkedMineId?: string;
   createdAt: number;
   updatedAt?: number;
   isArchived?: boolean;
@@ -92,6 +135,8 @@ export interface Party {
 export interface Payment {
   id: string;
   partyId: string;
+  supplierId?: string; // Explicit link when payment is paid to a supplier
+  mineId?: string; // Explicit link when payment is paid to a mine
   date: string;
   amount: number;
   type: 'received' | 'paid';
@@ -146,6 +191,8 @@ export interface AppSettings {
   accountType?: string;
   companyAddress?: string;
   ntnNumber?: string;
+  materialItems?: MaterialDefinition[];
+  suppliers?: SupplierProfile[];
   updatedAt?: number;
   // Device-local App Lock settings (explicitly stripped from cloud sync)
   appLockEnabled?: boolean;
@@ -160,6 +207,8 @@ export interface Mine {
   ratePerTon: number;
   location?: string;
   notes?: string;
+  phone?: string;
+  defaultSupplierId?: string;
   createdAt: number;
   updatedAt: number;
   deleted?: boolean;
@@ -171,6 +220,9 @@ export interface InventoryLot {
   id: string;
   mineId?: string; // Optional reference to Mine
   mineName?: string;
+  itemId?: string;
+  itemName?: string;
+  supplierId?: string;
   supplier: string; // "Bought from" vendor/supplier
   boughtFrom?: string; // Alias for bought from
   storedAt?: string; // Yard or depot location

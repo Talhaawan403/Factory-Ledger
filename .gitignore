@@ -59,6 +59,10 @@ Gemini*
 LOST_CHAT.*
 PRODUCTION_READINESS_FIXES.md
 PRODUCTION_READINESS_AUDIT_*.md
+REAL_WORLD_READINESS_AUDIT.*
+REAL_WORLD_READINESS_AUDIT_*
+MULTI_MATERIAL_IMPLEMENTATION.*
+MULTI_MATERIAL_IMPLEMENTATION_*
 CODEX*
 # Python cache & virtual environments
 __pycache__/
@@ -108,6 +112,11 @@ ui-debug.log*
 
 # Firebase
 .firebase/
+.firebaserc
+
+# Build wrapper scratch files
+*.real
+android/gradlew.real
 
 # Linters & caches
 .eslintcache

@@ -11,20 +11,25 @@ import {
   getPartyPurchaseOrders,
   savePurchaseOrder,
   deletePurchaseOrder,
+  getLots,
+  saveLot,
+  deleteLot,
   saveParty,
   deleteParty,
   archiveParty,
   getSettings,
+  getMines,
   cleanNumber
 } from '../lib/db';
-import type { Party, Dispatch, Payment, PurchaseOrder, AppSettings } from '../types';
+import type { Party, Dispatch, Payment, PurchaseOrder, AppSettings, InventoryLot, Mine } from '../types';
 import { getTodayDateString, toLocalDateString, formatDisplayDate } from '../utils/dateUtils';
 import { calculateSettlement, calculatePartyBalance, isDispatchPending, calculateLedgerTotals } from '../utils/calculations';
-import { getCurrencySymbol, getCurrencyCode, formatAmountNumber } from '../utils/currency';
+import { getCurrencySymbol, getCurrencyCode, formatAmountNumber, formatCompactFinancial } from '../utils/currency';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import { Capacitor } from '@capacitor/core';
 import { Share } from '@capacitor/share';
 import { v4 as uuidv4 } from 'uuid';
+import { getMaterialForDispatch } from '../utils/materials';
 import {
   ChevronLeft,
   Share2,
@@ -40,17 +45,21 @@ import {
   Loader2,
   ArchiveRestore,
   ArrowDown,
-  ArrowUp
+  ArrowUp,
+  Package,
+  TrendingUp
 } from 'lucide-react';
 import PartyModalSheet from '../components/PartyModalSheet';
 import FloatingField from '../components/FloatingField';
 import { triggerConfetti, playSuccessSound, playPopSound, playCashChime } from '../utils/delight';
-import { exportDispatchesPdf, sharePaymentImage } from '../utils/exportSharing';
+import { sharePaymentImage } from '../utils/exportSharing';
 import DispatchPreviewModal from '../components/DispatchPreviewModal';
-import { PaymentReceipt } from '../components/PaymentReceipt';
+import { PaymentReceipt } from '../components/PaymentReceipt.tsx';
 import PartyGlyph from '../components/PartyGlyph';
 import IOSConfirmModal from '../components/IOSConfirmModal';
 import NumericInput from '../components/NumericInput';
+import ExportDateRangeSheet from '../components/ExportDateRangeSheet';
+import SupplierLedgerView from '../components/SupplierLedgerView';
 
 export default function PartyLedger() {
   const { partyId } = useParams<{ partyId: string }>();
@@ -58,9 +67,14 @@ export default function PartyLedger() {
 
   const [party, setParty] = useState<Party | null>(null);
   const [dispatches, setDispatches] = useState<Dispatch[]>([]);
+  const [allDispatches, setAllDispatches] = useState<Dispatch[]>([]);
+  const [mines, setMines] = useState<Mine[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [pos, setPos] = useState<PurchaseOrder[]>([]);
+  const [lots, setLots] = useState<InventoryLot[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const isSupplier = party?.type === 'supplier';
 
   // Filter mode for transaction ledger
   const [ledgerFilter, setLedgerFilter] = useState<'all' | 'pos' | 'dispatches' | 'payments'>('all');
@@ -75,6 +89,29 @@ export default function PartyLedger() {
 
   // Share Statement Sheet state
   const [isShareSheetOpen, setIsShareSheetOpen] = useState(false);
+
+  // Add/Edit Inward Stock Sheet state (for Supplier)
+  const [isAddingStock, setIsAddingStock] = useState(false);
+  const [stockForm, setStockForm] = useState<{
+    id?: string;
+    date: string;
+    truckNumber: string;
+    mineName: string;
+    storedAt: string;
+    weight: string;
+    rate: string;
+    fare: string;
+    notes: string;
+  }>(() => ({
+    date: getTodayDateString(),
+    truckNumber: '',
+    mineName: '',
+    storedAt: '',
+    weight: '',
+    rate: '',
+    fare: '',
+    notes: '',
+  }));
 
   // Add/Edit Payment Modal state
   const [isAddingPayment, setIsAddingPayment] = useState(false);
@@ -122,6 +159,7 @@ export default function PartyLedger() {
   const [previewDispatch, setPreviewDispatch] = useState<Dispatch | null>(null);
   const [previewPayment, setPreviewPayment] = useState<Payment | null>(null);
   const [previewPO, setPreviewPO] = useState<PurchaseOrder | null>(null);
+  const [previewLot, setPreviewLot] = useState<InventoryLot | null>(null);
   const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
   const curSym = getCurrencySymbol(settings?.currency);
   const curCode = getCurrencyCode(settings?.currency);
@@ -134,18 +172,23 @@ export default function PartyLedger() {
 
   const refreshLedger = useCallback(async () => {
     if (!partyId) return;
-    const [p, allD, allPay, allPos, s] = await Promise.all([
+    const [p, allD, allPay, allPos, allLots, s, m] = await Promise.all([
       getParty(partyId),
       getDispatches(),
       getPartyPayments(partyId),
       getPartyPurchaseOrders(partyId),
-      getSettings()
+      getLots(),
+      getSettings(),
+      getMines(),
     ]);
     setParty(p);
+    setAllDispatches(allD);
     setDispatches(allD.filter((d) => d.partyId === partyId));
     setPayments(allPay);
     setPos(allPos);
+    setLots(allLots);
     setSettings(s);
+    setMines(m.filter((item) => !item.deleted));
     setLoading(false);
   }, [partyId]);
 
@@ -157,14 +200,19 @@ export default function PartyLedger() {
         getDispatches(),
         getPartyPayments(partyId),
         getPartyPurchaseOrders(partyId),
-        getSettings()
-      ]).then(([p, allD, allPay, allPos, s]) => {
+        getLots(),
+        getSettings(),
+        getMines(),
+      ]).then(([p, allD, allPay, allPos, allLots, s, m]) => {
         if (isCurrent) {
           setParty(p);
+          setAllDispatches(allD);
           setDispatches(allD.filter((d) => d.partyId === partyId));
           setPayments(allPay);
           setPos(allPos);
+          setLots(allLots);
           setSettings(s);
+          setMines(m.filter((item) => !item.deleted));
           setLoading(false);
         }
       });
@@ -238,7 +286,7 @@ export default function PartyLedger() {
   };
 
   const [deleteTarget, setDeleteTarget] = useState<{
-    type: 'payment' | 'po' | 'dispatch';
+    type: 'payment' | 'po' | 'dispatch' | 'lot';
     id: string;
     label?: string;
   } | null>(null);
@@ -288,6 +336,93 @@ export default function PartyLedger() {
     setDeleteTarget({ type: 'po', id, label: targetPo?.poNumber });
   };
 
+  const handleSaveStock = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!party) return;
+    const w = cleanNumber(stockForm.weight);
+    const r = cleanNumber(stockForm.rate);
+    const f = cleanNumber(stockForm.fare);
+    if (!w || w <= 0) {
+      playPopSound();
+      showToast('Please enter a valid weight in tons.');
+      return;
+    }
+    if (!r || r <= 0) {
+      playPopSound();
+      showToast('Please enter a valid purchase rate per ton.');
+      return;
+    }
+
+    const materialCost = w * r;
+    const totalVal = Math.round(materialCost + f);
+    const landedRate = w > 0 ? Math.round((totalVal / w) * 100) / 100 : r;
+    const now = Date.now();
+    const existingLot = stockForm.id ? lots.find((l) => l.id === stockForm.id) : undefined;
+
+    const lotToSave: InventoryLot = {
+      id: stockForm.id || uuidv4(),
+      supplierId: party.id,
+      supplier: party.name,
+      boughtFrom: party.name,
+      mineName: stockForm.mineName.trim() || undefined,
+      mineSource: stockForm.mineName.trim() || undefined,
+      storedAt: stockForm.storedAt.trim() || undefined,
+      truckNumber: stockForm.truckNumber.trim().toUpperCase() || undefined,
+      date: stockForm.date || getTodayDateString(),
+      billedWeight: w,
+      receivedWeight: w,
+      tonnage: w,
+      purchaseRate: r,
+      ratePerTon: r,
+      freightCost: f > 0 ? f : undefined,
+      totalValue: totalVal,
+      landedRate,
+      notes: stockForm.notes.trim() || undefined,
+      createdAt: existingLot?.createdAt || now,
+      updatedAt: now,
+    };
+
+    try {
+      await saveLot(lotToSave);
+      playSuccessSound();
+      triggerConfetti();
+      setIsAddingStock(false);
+      setPreviewLot(null);
+      setStockForm({
+        date: getTodayDateString(),
+        truckNumber: '',
+        mineName: '',
+        storedAt: '',
+        weight: '',
+        rate: '',
+        fare: '',
+        notes: '',
+      });
+      showToast(stockForm.id ? 'Stock delivery updated!' : 'Stock delivery saved & added to inventory!');
+      refreshLedger();
+    } catch (err: any) {
+      console.error('[PartyLedger] Save lot failed:', err);
+      playPopSound();
+      showToast(err?.message || 'Failed to save inward delivery.');
+    }
+  };
+
+  const openEditLot = (lot: InventoryLot) => {
+    setPreviewLot(null);
+    setStockForm({
+      id: lot.id,
+      date: lot.date,
+      truckNumber: lot.truckNumber || '',
+      mineName: lot.mineName || lot.mineSource || '',
+      storedAt: lot.storedAt || '',
+      weight: (lot.receivedWeight || lot.billedWeight || lot.tonnage || '').toString(),
+      rate: (lot.purchaseRate || lot.ratePerTon || '').toString(),
+      fare: (lot.freightCost || '').toString(),
+      notes: lot.notes || '',
+    });
+    setIsAddingStock(true);
+  };
+
   const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
     if (deleteTarget.type === 'payment') {
@@ -305,6 +440,15 @@ export default function PartyLedger() {
       setPreviewDispatch(null);
       refreshLedger();
       showToast('Dispatch record deleted');
+    } else if (deleteTarget.type === 'lot') {
+      try {
+        await deleteLot(deleteTarget.id);
+        setPreviewLot(null);
+        refreshLedger();
+        showToast('Stock delivery record deleted');
+      } catch (err: any) {
+        showToast(err?.message || 'Could not delete stock record.');
+      }
     }
     setDeleteTarget(null);
   };
@@ -362,72 +506,25 @@ export default function PartyLedger() {
     setIsEditingParty(true);
   };
 
+  // Filter lots belonging to this party/supplier
+  const partyLots = useMemo(() => {
+    if (!party) return [];
+    const cleanTarget = (party.name || '').trim().toLowerCase();
+    return lots.filter((l) => !l.deleted && (
+      (party.id && l.supplierId === party.id) ||
+      (!l.supplierId && cleanTarget && (l.supplier || l.boughtFrom || '').trim().toLowerCase() === cleanTarget)
+    ));
+  }, [lots, party]);
+
   // Financial aggregates derived directly during render via canonical calculatePartyBalance
-  const partyBalance = calculatePartyBalance(dispatches, payments);
+  const partyBalance = calculatePartyBalance(dispatches, payments, party, lots);
   const totalProfit = partyBalance.totalProfit;
   const totalBilled = partyBalance.totalBilled;
-  const totalPaymentsReceived = partyBalance.totalPaymentsReceived;
   const netPaymentsReceived = partyBalance.netPaymentsReceived;
   const outstandingBalance = partyBalance.outstandingBalance;
   const totalTons = partyBalance.totalTons;
-  const totalDeliveries = partyBalance.dispatchesCount;
 
-  const handleCopyStatement = useCallback(async () => {
-    const recentDisp = [...dispatches].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
-    const dateFormatted = formatDisplayDate(new Date());
 
-    const statementText = `*COAL ACCOUNT LEDGER STATEMENT*
-*Party:* ${party?.name}
-*Contact:* ${party?.contactPerson || 'Factory Account'} ${party?.phone ? `(${party?.phone})` : ''}
-*Address:* ${party?.address || 'N/A'}
-*Date:* ${dateFormatted}
-----------------------------------------
-*FINANCIAL OVERVIEW:*
-• Total Shipments: ${totalDeliveries} trucks
-• Total Dispatched Weight: ${totalTons.toFixed(2)} metric tons
-• Total Billed Revenue: ${curSym} ${formatAmountNumber(totalBilled, settings)}
-• Net Payments Received: ${curSym} ${formatAmountNumber(netPaymentsReceived, settings)}
-----------------------------------------
-*OUTSTANDING BALANCE:*
-*${curSym} ${formatAmountNumber(Math.abs(outstandingBalance), settings)}* (${outstandingBalance > 0 ? 'PAYABLE BY FACTORY' : outstandingBalance < 0 ? 'ADVANCE CREDIT HELD' : 'ACCOUNT FULLY SETTLED'})
-----------------------------------------
-*RECENT DELIVERIES:*
-${recentDisp.map(d => `• ${d.truckNumber} (${formatDisplayDate(d.date)}): ${d.labReceivedWeight}t · ${curSym} ${formatAmountNumber(calculateSettlement(d, settings).totalRevenue, settings)}`).join('\n')}
-
-*Generated by ${settings?.businessName || 'Awan Coal Logistics'}*`;
-
-    try {
-      if (Capacitor.isNativePlatform()) {
-        await Share.share({
-          title: `Statement - ${party?.name}`,
-          text: statementText,
-          dialogTitle: 'Share Ledger Statement',
-        });
-        setIsShareSheetOpen(false);
-        playSuccessSound();
-        showToast('Statement shared!');
-        return;
-      } else if (navigator.share) {
-        await navigator.share({
-          title: `Statement - ${party?.name}`,
-          text: statementText,
-        });
-        setIsShareSheetOpen(false);
-        playSuccessSound();
-        showToast('Statement shared!');
-        return;
-      }
-    } catch {
-      // Fallback to clipboard
-    }
-
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(statementText);
-      setIsShareSheetOpen(false);
-      playPopSound();
-      showToast('Statement copied to clipboard!');
-    }
-  }, [party, dispatches, totalDeliveries, totalTons, totalBilled, netPaymentsReceived, outstandingBalance, settings, curSym]);
 
   const handleSharePaymentVoucher = useCallback(async (pay: Payment) => {
     const isReceived = pay.type === 'received';
@@ -440,7 +537,7 @@ Direction: ${isReceived ? 'PAYMENT RECEIVED (INFLOW)' : 'PAYMENT PAID (OUTFLOW)'
 Payment Mode: ${pay.mode.toUpperCase()}
 Reference Note: ${pay.referenceNote || 'Direct Settlement'}
 ----------------------------------------
-Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalance), settings)} (${outstandingBalance > 0 ? 'Receivable' : 'Settled'})
+Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalance), settings)} (${party?.type === 'supplier' ? (outstandingBalance > 50 ? 'Payable to Supplier' : outstandingBalance < -50 ? 'Advance Paid' : 'Settled') : (outstandingBalance > 0 ? 'Receivable' : 'Settled')})
 
 *${settings?.businessName || 'Awan Coal Logistics'}*`;
 
@@ -478,20 +575,46 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
   type LedgerItem =
     | { kind: 'dispatch'; data: Dispatch; date: string; time: number }
     | { kind: 'payment'; data: Payment; date: string; time: number }
-    | { kind: 'po'; data: PurchaseOrder; date: string; time: number };
+    | { kind: 'po'; data: PurchaseOrder; date: string; time: number }
+    | { kind: 'lot'; data: InventoryLot; date: string; time: number };
 
   const combinedLedger = useMemo(() => {
     const items: LedgerItem[] = [];
 
-    if (ledgerFilter === 'all' || ledgerFilter === 'dispatches') {
-      dispatches.forEach((d) => {
-        items.push({
-          kind: 'dispatch',
-          data: d,
-          date: d.date,
-          time: new Date(d.date).getTime()
+    if (isSupplier) {
+      if (ledgerFilter === 'all' || ledgerFilter === 'dispatches') {
+        partyLots.forEach((l) => {
+          items.push({
+            kind: 'lot',
+            data: l,
+            date: l.date,
+            time: new Date(l.date).getTime()
+          });
         });
-      });
+      }
+    } else {
+      if (ledgerFilter === 'all' || ledgerFilter === 'dispatches') {
+        dispatches.forEach((d) => {
+          items.push({
+            kind: 'dispatch',
+            data: d,
+            date: d.date,
+            time: new Date(d.date).getTime()
+          });
+        });
+      }
+
+      if (ledgerFilter === 'all' || ledgerFilter === 'pos') {
+        pos.forEach((p) => {
+          const dateStr = toLocalDateString(p.createdAt);
+          items.push({
+            kind: 'po',
+            data: p,
+            date: dateStr,
+            time: p.createdAt
+          });
+        });
+      }
     }
 
     if (ledgerFilter === 'all' || ledgerFilter === 'payments') {
@@ -505,20 +628,8 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
       });
     }
 
-    if (ledgerFilter === 'all' || ledgerFilter === 'pos') {
-      pos.forEach((p) => {
-        const dateStr = toLocalDateString(p.createdAt);
-        items.push({
-          kind: 'po',
-          data: p,
-          date: dateStr,
-          time: p.createdAt
-        });
-      });
-    }
-
     return items.sort((a, b) => (sortOrder === 'desc' ? b.time - a.time : a.time - b.time));
-  }, [dispatches, payments, pos, ledgerFilter, sortOrder]);
+  }, [dispatches, payments, pos, partyLots, isSupplier, ledgerFilter, sortOrder]);
 
   if (loading) {
     return (
@@ -533,6 +644,121 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
       <div style={{ padding: 40, textAlign: 'center', color: 'var(--ios-red)', fontSize: 15 }}>
         Party account not found.
       </div>
+    );
+  }
+
+  if (isSupplier) {
+    return (
+      <>
+        <SupplierLedgerView
+          party={party}
+          lots={partyLots}
+          payments={payments}
+          settings={settings}
+          dispatches={allDispatches}
+          mines={mines}
+          onRefresh={refreshLedger}
+          onEditParty={openEditParty}
+          onDeleteParty={() => setPartyToDelete(party)}
+          onArchiveParty={async () => {
+            if (!party) return;
+            await archiveParty(party.id, true);
+            navigate('/parties');
+          }}
+          onSavePayment={async (payData) => {
+            await savePayment({
+              id: payData.id || uuidv4(),
+              partyId: party.id,
+              supplierId: party.id,
+              date: payData.date || getTodayDateString(),
+              amount: payData.amount || 0,
+              type: payData.type || 'paid',
+              mode: payData.mode || 'bank',
+              referenceNote: payData.referenceNote,
+              createdAt: payData.createdAt || Date.now(),
+            });
+            refreshLedger();
+          }}
+          onDeletePayment={async (id) => {
+            await deletePayment(id);
+            refreshLedger();
+          }}
+          onSaveLot={async (lotData) => {
+            await saveLot({
+              ...lotData,
+              id: lotData.id || uuidv4(),
+              supplierId: party.id,
+              supplier: party.name,
+              boughtFrom: party.name,
+            } as any);
+            refreshLedger();
+          }}
+          onDeleteLot={async (id) => {
+            await deleteLot(id);
+            refreshLedger();
+          }}
+        />
+
+        {/* Edit Party Apple iOS Modal Sheet */}
+        <PartyModalSheet
+          isOpen={isEditingParty}
+          mode="edit"
+          initialData={{
+            name: party.name,
+            contactPerson: party.contactPerson,
+            phone: party.phone,
+            address: party.address,
+            type: party.type || 'supplier',
+            materialIds: party.materialIds,
+          }}
+          onClose={() => setIsEditingParty(false)}
+          onSave={async (data) => {
+            const updatedParty: Party = {
+              ...party,
+              name: data.name,
+              contactPerson: data.contactPerson,
+              phone: data.phone,
+              address: data.address,
+              type: data.type || 'supplier',
+              materialIds: data.materialIds,
+            };
+            await saveParty(updatedParty);
+            setParty(updatedParty);
+            setIsEditingParty(false);
+          }}
+        />
+
+        {/* Delete Party Confirmation Modal */}
+        {partyToDelete && (
+          <IOSConfirmModal
+            isOpen={Boolean(partyToDelete)}
+            title={partyLots.length > 0 || payments.length > 0 ? "Supplier Has Existing Records" : "Delete Supplier?"}
+            message={
+              partyLots.length > 0 || payments.length > 0
+                ? `"${partyToDelete.name}" has ${partyLots.length} delivery(ies) and ${payments.length} payment(s). You can't delete this supplier because it has existing transactions. You can archive the supplier instead.`
+                : `Are you sure you want to delete supplier "${partyToDelete.name}"?`
+            }
+            confirmText={partyLots.length > 0 || payments.length > 0 ? "Archive Supplier" : "Delete Supplier"}
+            cancelText="Cancel"
+            destructive={!(partyLots.length > 0 || payments.length > 0)}
+            icon={partyLots.length > 0 || payments.length > 0 ? "warning" : "trash"}
+            countdownSeconds={partyLots.length > 0 || payments.length > 0 ? 0 : 2}
+            onConfirm={async () => {
+              if (partyLots.length > 0 || payments.length > 0) {
+                await archiveParty(partyToDelete.id, true);
+                setParty({ ...partyToDelete, isArchived: true });
+                setPartyToDelete(null);
+                showToast('Supplier archived successfully');
+              } else {
+                await deleteParty(partyToDelete.id);
+                setPartyToDelete(null);
+                navigate('/parties');
+              }
+            }}
+            onCancel={() => setPartyToDelete(null)}
+          />
+        )}
+      </>
     );
   }
 
@@ -670,71 +896,163 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
 
       {/* ── 3 Action Buttons ── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, padding: '0 16px', marginBottom: 18 }}>
-        <button
-          onClick={() => { playPopSound(); navigate(`/parties/${partyId}/dispatch/new`); }}
-          style={{
-            padding: '13px 8px', borderRadius: 16,
-            background: 'var(--ios-blue)',
-            color: '#FFFFFF',
-            border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
-            fontSize: 13, fontWeight: 700, cursor: 'pointer',
-            boxShadow: 'none',
-            transition: 'transform 0.15s ease'
-          }}
-          className="ios-tile-btn interactive-scale"
-        >
-          <Truck style={{ width: 22, height: 22 }} strokeWidth={2.4} />
-          <span>+ Dispatch</span>
-        </button>
+        {isSupplier ? (
+          <>
+            <button
+              onClick={() => {
+                playPopSound();
+                setStockForm({
+                  date: getTodayDateString(),
+                  truckNumber: '',
+                  mineName: '',
+                  storedAt: '',
+                  weight: '',
+                  rate: '',
+                  fare: '',
+                  notes: '',
+                });
+                setIsAddingStock(true);
+              }}
+              style={{
+                padding: '13px 8px', borderRadius: 16,
+                background: '#FF9500',
+                color: '#FFFFFF',
+                border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
+                fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                boxShadow: 'none',
+                transition: 'transform 0.15s ease'
+              }}
+              className="ios-tile-btn interactive-scale"
+            >
+              <Package style={{ width: 22, height: 22 }} strokeWidth={2.4} />
+              <span>+ Inward Stock</span>
+            </button>
 
-        <button
-          onClick={() => {
-            playPopSound();
-            setPaymentForm({ id: undefined, date: getTodayDateString(), amount: '', type: 'received', mode: 'bank', referenceNote: '' });
-            setIsAddingPayment(true);
-          }}
-          style={{
-            padding: '13px 8px', borderRadius: 16,
-            background: 'var(--ios-green)',
-            color: '#FFFFFF',
-            border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
-            fontSize: 13, fontWeight: 700, cursor: 'pointer',
-            boxShadow: 'none',
-            transition: 'transform 0.15s ease'
-          }}
-          className="ios-tile-btn interactive-scale"
-        >
-          <Coins style={{ width: 22, height: 22 }} strokeWidth={2.4} />
-          <span>+ Payment</span>
-        </button>
+            <button
+              onClick={() => {
+                playPopSound();
+                setPaymentForm({ id: undefined, date: getTodayDateString(), amount: '', type: 'paid', mode: 'bank', referenceNote: '' });
+                setIsAddingPayment(true);
+              }}
+              style={{
+                padding: '13px 8px', borderRadius: 16,
+                background: 'var(--ios-green)',
+                color: '#FFFFFF',
+                border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
+                fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                boxShadow: 'none',
+                transition: 'transform 0.15s ease'
+              }}
+              className="ios-tile-btn interactive-scale"
+            >
+              <Coins style={{ width: 22, height: 22 }} strokeWidth={2.4} />
+              <span>+ Payment</span>
+            </button>
 
-        <button
-          onClick={() => { playPopSound(); openNewPO(); }}
-          style={{
-            padding: '13px 8px', borderRadius: 16,
-            background: 'var(--ios-purple)',
-            color: '#FFFFFF',
-            border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
-            fontSize: 13, fontWeight: 700, cursor: 'pointer',
-            boxShadow: 'none',
-            transition: 'transform 0.15s ease'
-          }}
-          className="ios-tile-btn interactive-scale"
-        >
-          <FileText style={{ width: 22, height: 22 }} strokeWidth={2.4} />
-          <span>+ New PO</span>
-        </button>
+            <button
+              onClick={() => { playPopSound(); setIsShareSheetOpen(true); }}
+              style={{
+                padding: '13px 8px', borderRadius: 16,
+                background: 'var(--ios-purple)',
+                color: '#FFFFFF',
+                border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
+                fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                boxShadow: 'none',
+                transition: 'transform 0.15s ease'
+              }}
+              className="ios-tile-btn interactive-scale"
+            >
+              <Share2 style={{ width: 22, height: 22 }} strokeWidth={2.4} />
+              <span>Statement</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              onClick={() => { playPopSound(); navigate(`/parties/${partyId}/dispatch/new`); }}
+              style={{
+                padding: '13px 8px', borderRadius: 16,
+                background: 'var(--ios-blue)',
+                color: '#FFFFFF',
+                border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
+                fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                boxShadow: 'none',
+                transition: 'transform 0.15s ease'
+              }}
+              className="ios-tile-btn interactive-scale"
+            >
+              <Truck style={{ width: 22, height: 22 }} strokeWidth={2.4} />
+              <span>+ Dispatch</span>
+            </button>
+
+            <button
+              onClick={() => {
+                playPopSound();
+                setPaymentForm({ id: undefined, date: getTodayDateString(), amount: '', type: 'received', mode: 'bank', referenceNote: '' });
+                setIsAddingPayment(true);
+              }}
+              style={{
+                padding: '13px 8px', borderRadius: 16,
+                background: 'var(--ios-green)',
+                color: '#FFFFFF',
+                border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
+                fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                boxShadow: 'none',
+                transition: 'transform 0.15s ease'
+              }}
+              className="ios-tile-btn interactive-scale"
+            >
+              <Coins style={{ width: 22, height: 22 }} strokeWidth={2.4} />
+              <span>+ Payment</span>
+            </button>
+
+            <button
+              onClick={() => { playPopSound(); openNewPO(); }}
+              style={{
+                padding: '13px 8px', borderRadius: 16,
+                background: 'var(--ios-purple)',
+                color: '#FFFFFF',
+                border: 'none', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 6,
+                fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                boxShadow: 'none',
+                transition: 'transform 0.15s ease'
+              }}
+              className="ios-tile-btn interactive-scale"
+            >
+              <FileText style={{ width: 22, height: 22 }} strokeWidth={2.4} />
+              <span>+ New PO</span>
+            </button>
+          </>
+        )}
       </div>
 
-      {/* ── Factory Dashboard Summary Card ── */}
-      <div style={{ width: '100%', marginBottom: 20 }}>
+      {/* ── Dashboard Summary Hero Card (Sleek Horizontal Stats) ── */}
+      <div style={{ width: '100%', marginBottom: 18 }}>
         <div className="ios-hero-card" style={{ padding: '20px 22px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--label-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Ledger Settlement Status
             </span>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <span className="settlement-status-badge">
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: '3px 8px',
+                  borderRadius: 8,
+                  background: outstandingBalance > 0
+                    ? 'rgba(255,149,0,0.15)'
+                    : outstandingBalance < 0
+                      ? 'rgba(52,199,89,0.15)'
+                      : 'rgba(142,142,147,0.15)',
+                  color: outstandingBalance > 0
+                    ? '#FF9500'
+                    : outstandingBalance < 0
+                      ? 'var(--ios-green)'
+                      : 'var(--label-secondary)',
+                  letterSpacing: '0.3px',
+                }}
+              >
                 {outstandingBalance > 0 ? 'Dues Outstanding' : outstandingBalance < 0 ? 'Advance Credit Held' : 'Account Settled'}
               </span>
             </div>
@@ -763,31 +1081,87 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
             </div>
           </div>
 
-          {/* Metric grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginTop: 16 }}>
-            <div className="ios-metric-widget">
-              <span className="metric-label">Total Invoiced</span>
-              <span className="metric-val" style={{ color: 'var(--label-primary)' }}>
-                {curSym} {formatAmountNumber(totalBilled, settings)}
+          {/* Net Profit Dedicated Line */}
+          <div
+            style={{
+              marginTop: 16,
+              padding: '9px 12px',
+              borderRadius: 12,
+              background: totalProfit >= 0 ? 'var(--ios-green)' : 'var(--ios-red)',
+              //border: totalProfit >= 0 ? '0.5px solid rgba(255, 255, 255, 1)' : '0.5px solid rgba(255, 59, 48, 0.22)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <TrendingUp size={14} style={{ color: totalProfit >= 0 ? 'var(--ios-white)' : 'var(--ios-white)', flexShrink: 0 }} />
+              <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ios-white)', textTransform: 'uppercase', letterSpacing: '0.3px' }}>
+                Net Profit:
+              </span>
+              <span
+                className="tabular-nums"
+                style={{
+                  fontSize: 14.5,
+                  fontWeight: 750,
+                  color: totalProfit >= 0 ? 'var(--ios-white)' : 'var(--ios-white)',
+                  letterSpacing: '-0.2px',
+                }}
+              >
+                {totalProfit >= 0 ? '+' : '-'}{curSym} {formatCompactFinancial(Math.abs(totalProfit), settings, 1).value} {formatCompactFinancial(Math.abs(totalProfit), settings, 1).unit}
               </span>
             </div>
-            <div className="ios-metric-widget">
-              <span className="metric-label">Payments Rcvd</span>
-              <span className="metric-val" style={{ color: 'var(--ios-green)' }}>
-                {curSym} {formatAmountNumber(totalPaymentsReceived, settings)}
+            {totalBilled > 0 && (
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  color: totalProfit >= 0 ? 'var(--ios-white)' : 'var(--ios-white)',
+                  opacity: 0.9,
+                }}
+              >
+                {((totalProfit / totalBilled) * 100).toFixed(1)}% margin
               </span>
+            )}
+          </div>
+
+          {/* 3 Metrics Row Below */}
+          <div
+            style={{
+              marginTop: 12,
+              paddingTop: 12,
+              borderTop: '0.5px solid var(--separator)',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+              gap: 8,
+              textAlign: 'center',
+            }}
+          >
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.2px' }}>
+                Total Invoiced
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)', marginTop: 2, whiteSpace: 'nowrap' }} className="tabular-nums">
+                {curSym} {formatCompactFinancial(totalBilled, settings, 1).value} {formatCompactFinancial(totalBilled, settings, 1).unit}
+              </div>
             </div>
-            <div className="ios-metric-widget">
-              <span className="metric-label">Delivered Volume</span>
-              <span className="metric-val" style={{ color: 'var(--label-primary)' }}>
-                {totalTons.toFixed(1)} <span style={{ fontSize: 13, fontWeight: 500 }}>t ({totalDeliveries} trucks)</span>
-              </span>
+
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.2px' }}>
+                Payments Rcvd
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--ios-green)', marginTop: 2, whiteSpace: 'nowrap' }} className="tabular-nums">
+                {curSym} {formatCompactFinancial(netPaymentsReceived, settings, 1).value} {formatCompactFinancial(netPaymentsReceived, settings, 1).unit}
+              </div>
             </div>
-            <div className="ios-metric-widget">
-              <span className="metric-label">Net Profit</span>
-              <span className="metric-val" style={{ color: totalProfit >= 0 ? 'var(--ios-green)' : 'var(--ios-red)' }}>
-                {totalProfit >= 0 ? '+' : '-'}{curSym} {formatAmountNumber(Math.abs(totalProfit), settings)}
-              </span>
+
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--label-tertiary)', textTransform: 'uppercase', letterSpacing: '0.2px' }}>
+                Delivered
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--label-primary)', marginTop: 2, whiteSpace: 'nowrap' }} className="tabular-nums">
+                {totalTons.toFixed(1)} <span style={{ fontSize: 11, fontWeight: 500, color: 'var(--label-secondary)' }}>tons</span>
+              </div>
             </div>
           </div>
         </div>
@@ -802,24 +1176,43 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
           >
             All
           </button>
-          <button
-            className={`ios-segmented-item ${ledgerFilter === 'pos' ? 'active' : ''}`}
-            onClick={() => { playPopSound(); setLedgerFilter('pos'); }}
-          >
-            POs
-          </button>
-          <button
-            className={`ios-segmented-item ${ledgerFilter === 'dispatches' ? 'active' : ''}`}
-            onClick={() => { playPopSound(); setLedgerFilter('dispatches'); }}
-          >
-            Dispatches
-          </button>
-          <button
-            className={`ios-segmented-item ${ledgerFilter === 'payments' ? 'active' : ''}`}
-            onClick={() => { playPopSound(); setLedgerFilter('payments'); }}
-          >
-            Payments
-          </button>
+          {isSupplier ? (
+            <>
+              <button
+                className={`ios-segmented-item ${ledgerFilter === 'dispatches' ? 'active' : ''}`}
+                onClick={() => { playPopSound(); setLedgerFilter('dispatches'); }}
+              >
+                Deliveries ({partyLots.length})
+              </button>
+              <button
+                className={`ios-segmented-item ${ledgerFilter === 'payments' ? 'active' : ''}`}
+                onClick={() => { playPopSound(); setLedgerFilter('payments'); }}
+              >
+                Payments ({payments.length})
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className={`ios-segmented-item ${ledgerFilter === 'pos' ? 'active' : ''}`}
+                onClick={() => { playPopSound(); setLedgerFilter('pos'); }}
+              >
+                POs
+              </button>
+              <button
+                className={`ios-segmented-item ${ledgerFilter === 'dispatches' ? 'active' : ''}`}
+                onClick={() => { playPopSound(); setLedgerFilter('dispatches'); }}
+              >
+                Dispatches
+              </button>
+              <button
+                className={`ios-segmented-item ${ledgerFilter === 'payments' ? 'active' : ''}`}
+                onClick={() => { playPopSound(); setLedgerFilter('payments'); }}
+              >
+                Payments
+              </button>
+            </>
+          )}
         </div>
 
         <button
@@ -858,7 +1251,9 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
               <FileSpreadsheet style={{ width: 40, height: 40, margin: '0 auto 10px', opacity: 0.35 }} strokeWidth={1.5} />
               <div style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>No Entries Yet</div>
               <div style={{ fontSize: 13, marginTop: 4 }}>
-                Tap "+ Coal Entry" or "+ Payment Entry" above to add records.
+                {isSupplier
+                  ? 'Tap "+ Inward Stock" or "+ Payment" above to add records.'
+                  : 'Tap "+ Dispatch" or "+ Payment" above to add records.'}
               </div>
             </div>
           ) : (
@@ -868,11 +1263,69 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
               const monthStr = dateParts.length === 3 ? (monthNames[parseInt(dateParts[1], 10) - 1] || '---') : '---';
               const dayStr = dateParts.length === 3 ? parseInt(dateParts[2], 10) : '--';
 
-              if (item.kind === 'dispatch') {
+              if (item.kind === 'lot') {
+                const lot = item.data;
+                const lotTons = lot.receivedWeight || lot.billedWeight || lot.tonnage || 0;
+                const lotRate = lot.purchaseRate || lot.ratePerTon || 0;
+                const lotFare = lot.freightCost || 0;
+                const lotTotal = lot.totalValue !== undefined ? lot.totalValue : Math.round(lotTons * lotRate + lotFare);
+
+                return (
+                  <div key={`lot-${lot.id}`} className="ios-cell" onClick={() => setPreviewLot(lot)} style={{ cursor: 'pointer' }}>
+                    <div style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: 10,
+                      background: 'var(--fill-tertiary)',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      marginRight: 14,
+                      flexShrink: 0,
+                      border: '0.5px solid var(--separator)'
+                    }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: '#FF9500', letterSpacing: 0.3 }}>{monthStr}</span>
+                      <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)', lineHeight: 1 }}>{dayStr}</span>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                        <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>
+                          {lot.truckNumber || 'Inward Stock'}
+                        </span>
+                        <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">
+                          {curSym} {formatAmountNumber(lotTotal, settings)}
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2, gap: 8 }}>
+                        <span style={{ fontSize: 13, color: 'var(--label-secondary)', display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          <span>{lotTons.toFixed(2)} t · {curSym} {lotRate}/t</span>
+                          {lotFare > 0 && (
+                            <span style={{ color: 'var(--label-secondary)', fontSize: 11, background: 'var(--fill-tertiary)', padding: '1px 5px', borderRadius: 4, flexShrink: 0 }}>
+                              Fare: {curSym} {formatAmountNumber(lotFare, settings)}
+                            </span>
+                          )}
+                          {lot.storedAt && (
+                            <span style={{ color: '#FF9500', fontSize: 11, background: 'rgba(255, 149, 0, 0.1)', padding: '1px 5px', borderRadius: 4, flexShrink: 0 }}>
+                              {lot.storedAt}
+                            </span>
+                          )}
+                        </span>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: '#FF9500', background: 'rgba(255, 149, 0, 0.12)', padding: '1px 6px', borderRadius: 4, flexShrink: 0 }}>
+                          INWARD
+                        </span>
+                      </div>
+                    </div>
+                    <ChevronRight className="ios-chevron" strokeWidth={2.5} style={{ flexShrink: 0 }} />
+                    <div className="ios-separator with-glyph" />
+                  </div>
+                );
+              } else if (item.kind === 'dispatch') {
                 const d = item.data;
                 const isPending = isDispatchPending(d);
                 const settlement = calculateSettlement(d, settings);
                 const isProfit = settlement.netProfit >= 0;
+                const material = getMaterialForDispatch(d, settings);
 
                 return (
                   <div key={`disp-${d.id}`} className="ios-cell" onClick={() => setPreviewDispatch(d)}>
@@ -881,27 +1334,34 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                       <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)', lineHeight: 1 }}>{dayStr}</span>
                     </div>
                     <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                        <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>{d.truckNumber}</span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                          <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', whiteSpace: 'nowrap' }}>{d.truckNumber}</span>
+                          {material?.name && (
+                            <span style={{ color: 'var(--ios-blue)', fontSize: 10.5, fontWeight: 650, background: 'rgba(0, 122, 255, 0.12)', padding: '1.5px 6px', borderRadius: 4, flexShrink: 0, whiteSpace: 'nowrap' }}>
+                              {material.name}
+                            </span>
+                          )}
+                        </div>
                         {isPending ? (
-                          <span style={{ fontSize: 11, fontWeight: 700, color: '#ffffff', background: '#ff9500', padding: '2px 8px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>In Transit</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: '#ffffff', background: '#ff9500', padding: '2px 8px', borderRadius: 4, textTransform: 'uppercase', letterSpacing: 0.5, flexShrink: 0, whiteSpace: 'nowrap' }}>In Transit</span>
                         ) : (
-                          <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)' }} className="tabular-nums">{curSym} {formatAmountNumber(settlement.totalRevenue, settings)}</span>
+                          <span style={{ fontSize: 16, fontWeight: 700, color: 'var(--label-primary)', flexShrink: 0, whiteSpace: 'nowrap' }} className="tabular-nums">{curSym} {formatAmountNumber(settlement.totalRevenue, settings)}</span>
                         )}
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2, gap: 8 }}>
                         <span style={{ fontSize: 13, color: 'var(--label-secondary)', display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          <span>{isPending ? `${d.coalInputs?.[0]?.weight || 0} t loaded` : `${d.labReceivedWeight || 0} t`}</span>
+                          <span style={{ whiteSpace: 'nowrap' }}>{isPending ? `${d.coalInputs?.[0]?.weight || 0} t loaded` : `${d.labReceivedWeight || 0} t`}</span>
                           {d.coalInputs?.[0]?.sourceName && (
-                            <span style={{ color: 'var(--label-secondary)', fontSize: 11, background: 'var(--fill-tertiary)', padding: '1px 5px', borderRadius: 4, flexShrink: 0 }}>
+                            <span style={{ color: 'var(--label-secondary)', fontSize: 11, background: 'var(--fill-tertiary)', padding: '1px 5px', borderRadius: 4, flexShrink: 0, whiteSpace: 'nowrap' }}>
                               {d.coalInputs[0].sourceName.split(' - ')[0]}
                             </span>
                           )}
                         </span>
                         {isPending ? (
-                          <span style={{ fontSize: 12, fontWeight: 600, color: '#ff9500', flexShrink: 0 }}>Pending Weighbridge</span>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: '#ff9500', flexShrink: 0, whiteSpace: 'nowrap' }}>Pending Weighbridge</span>
                         ) : (
-                          <span style={{ fontSize: 12, fontWeight: 600, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)', flexShrink: 0 }} className="tabular-nums">{isProfit ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(Math.abs(settlement.netProfit), settings)} {isProfit ? 'profit' : 'loss'}</span>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: isProfit ? 'var(--ios-green)' : 'var(--ios-red)', flexShrink: 0, whiteSpace: 'nowrap' }} className="tabular-nums">{isProfit ? `+${curSym} ` : `-${curSym} `}{formatAmountNumber(Math.abs(settlement.netProfit), settings)} {isProfit ? 'profit' : 'loss'}</span>
                         )}
                       </div>
                     </div>
@@ -919,29 +1379,88 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                       width: 44,
                       height: 44,
                       borderRadius: 10,
-                      background: isReceived ? 'var(--ios-green)' : 'var(--ios-orange)',
+                      background: 'var(--fill-tertiary)',
                       display: 'flex',
                       flexDirection: 'column',
                       alignItems: 'center',
                       justifyContent: 'center',
                       marginRight: 14,
-                      flexShrink: 0
+                      flexShrink: 0,
+                      border: '0.5px solid var(--separator)'
                     }}>
-                      <span style={{ fontSize: 9, fontWeight: 700, color: 'rgba(255, 255, 255, 0.88)', letterSpacing: 0.3 }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: isReceived ? 'var(--ios-green)' : '#FF9500', letterSpacing: 0.3 }}>
                         {monthStr}
                       </span>
-                      <span style={{ fontSize: 17, fontWeight: 700, color: '#FFFFFF', lineHeight: 1 }}>
+                      <span style={{ fontSize: 17, fontWeight: 700, color: 'var(--label-primary)', lineHeight: 1 }}>
                         {dayStr}
                       </span>
                     </div>
-                    <div style={{ flex: 1, minWidth: 0, paddingRight: 0 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                        <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>{isReceived ? 'Received' : 'Sent'}</span>
-                        <span style={{ fontSize: 16, fontWeight: 700, color: isReceived ? 'var(--ios-green)' : 'var(--ios-orange)' }} className="tabular-nums">{isReceived ? '-' : '+'}{curSym} {formatAmountNumber(pay.amount, settings)}</span>
+                    <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                          <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', whiteSpace: 'nowrap' }}>
+                            {isReceived ? 'Payment Rcvd' : 'Payment Sent'}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              padding: '1.5px 6px',
+                              borderRadius: 4,
+                              background: isReceived ? 'rgba(52, 199, 89, 0.14)' : 'rgba(255, 149, 0, 0.14)',
+                              color: isReceived ? 'var(--ios-green)' : '#FF9500',
+                              textTransform: 'uppercase',
+                              letterSpacing: '0.4px',
+                              flexShrink: 0,
+                              whiteSpace: 'nowrap'
+                            }}
+                          >
+                            {pay.mode || 'CASH'}
+                          </span>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: 16,
+                            fontWeight: 700,
+                            color: isReceived ? 'var(--ios-green)' : 'var(--ios-orange)',
+                            flexShrink: 0,
+                            whiteSpace: 'nowrap'
+                          }}
+                          className="tabular-nums"
+                        >
+                          {isReceived ? '-' : '+'}{curSym} {formatAmountNumber(pay.amount, settings)}
+                        </span>
                       </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-                        <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>{pay.mode.toUpperCase()}{pay.referenceNote ? ` · ${pay.referenceNote}` : ''}</span>
-                        <span style={{ fontSize: 11, fontWeight: 600, color: isReceived ? 'white' : 'white', background: isReceived ? 'var(--ios-green)' : 'var(--ios-orange)', padding: '1px 6px', borderRadius: 4 }}>{isReceived ? 'RECEIVED' : 'PAID'}</span>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2, gap: 8 }}>
+                        <span
+                          style={{
+                            fontSize: 13,
+                            color: 'var(--label-secondary)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            minWidth: 0,
+                            flex: 1
+                          }}
+                        >
+                          {pay.referenceNote ? pay.referenceNote : (pay.mode === 'bank' ? 'Bank Transfer' : pay.mode === 'cheque' ? 'Cheque Payment' : 'Cash Settlement')}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 650,
+                            color: isReceived ? 'var(--ios-green)' : 'var(--ios-orange)',
+                            background: isReceived ? 'rgba(52, 199, 89, 0.1)' : 'rgba(255, 149, 0, 0.1)',
+                            padding: '1px 6px',
+                            borderRadius: 4,
+                            flexShrink: 0,
+                            whiteSpace: 'nowrap',
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.3px'
+                          }}
+                        >
+                          {isReceived ? 'Credit' : 'Debit'}
+                        </span>
                       </div>
                     </div>
                     <ChevronRight className="ios-chevron" strokeWidth={2.5} style={{ flexShrink: 0 }} />
@@ -956,35 +1475,48 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                 const hasTarget = Boolean(po.totalTons && po.totalTons > 0);
                 const progressPct = hasTarget ? Math.min(100, Math.round((poTons / (po.totalTons || 1)) * 100)) : 0;
 
+                const specParts: string[] = [];
+                if (po.targetGcv && Number(po.targetGcv) > 0) {
+                  specParts.push(`GCV: ${po.targetGcv}`);
+                }
+                if (po.commissionPerTon && Number(po.commissionPerTon) > 0) {
+                  specParts.push(`Comm: ${curSym} ${po.commissionPerTon}/t`);
+                }
+                const poSpecSummary = specParts.length > 0
+                  ? specParts.join(' · ')
+                  : (po.itemName || 'Standard Contract');
+
                 return (
                   <div key={`po-${po.id}`} className="ios-cell" onClick={() => setPreviewPO(po)} style={{ cursor: 'pointer' }}>
                     <div style={{ width: 44, height: 44, borderRadius: 10, background: po.isActive ? 'var(--ios-purple)' : 'var(--fill-secondary)', color: po.isActive ? 'white' : 'var(--label-tertiary)', display: 'flex', alignItems: 'center', justifyContent: 'center', marginRight: 14, flexShrink: 0 }}>
                       <FileText style={{ width: 22, height: 22 }} strokeWidth={2.2} />
                     </div>
                     <div style={{ flex: 1, minWidth: 0, paddingRight: 8 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>{po.poNumber}</span>
-                          <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: po.isActive ? 'var(--ios-green)' : 'var(--fill-secondary)', color: po.isActive ? 'white' : 'var(--label-tertiary)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                          <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', whiteSpace: 'nowrap' }}>{po.poNumber}</span>
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: po.isActive ? 'var(--ios-green)' : 'var(--fill-secondary)', color: po.isActive ? 'white' : 'var(--label-tertiary)', flexShrink: 0, whiteSpace: 'nowrap' }}>
                             {po.isActive ? 'ACTIVE' : 'FULFILLED'}
                           </span>
                         </div>
-                        <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--label-primary)' }} className="tabular-nums">{curSym} {po.baseRate}/t</span>
+                        <span style={{ fontSize: 15, fontWeight: 600, color: 'var(--label-primary)', flexShrink: 0, whiteSpace: 'nowrap' }} className="tabular-nums">{curSym} {po.baseRate}/t</span>
                       </div>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 }}>
-                        <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>Target GCV: {po.targetGcv} · Comm: {curSym} {po.commissionPerTon}/t</span>
-                        <span style={{ fontSize: 12, color: hasTarget && progressPct >= 100 ? 'var(--ios-green)' : 'var(--label-tertiary)', fontWeight: hasTarget ? 600 : 400 }}>
-                          {poDispatches.length} trucks ({poTons.toFixed(1)}{hasTarget ? ` / ${po.totalTons}t` : 't'})
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 2, gap: 8 }}>
+                        <span style={{ fontSize: 13, color: 'var(--label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>
+                          {poSpecSummary}
+                        </span>
+                        <span style={{ fontSize: 12, color: hasTarget && progressPct >= 100 ? 'var(--ios-green)' : 'var(--label-tertiary)', fontWeight: hasTarget ? 600 : 400, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                          {poDispatches.length} {poDispatches.length === 1 ? 'truck' : 'trucks'} ({poTons.toFixed(1)}{hasTarget ? `/${po.totalTons}t` : 't'})
                         </span>
                       </div>
                       {hasTarget && (
-                        <div style={{ marginTop: 6, height: 5, borderRadius: 3, background: 'var(--fill-secondary)', overflow: 'hidden' }}>
+                        <div style={{ marginTop: 6, height: 4, borderRadius: 2, background: 'var(--fill-secondary)', overflow: 'hidden' }}>
                           <div
                             style={{
                               height: '100%',
                               width: `${progressPct}%`,
                               background: progressPct >= 100 ? 'var(--ios-green)' : 'var(--ios-purple)',
-                              borderRadius: 3,
+                              borderRadius: 2,
                               transition: 'width 0.3s ease'
                             }}
                           />
@@ -1033,20 +1565,41 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                 <div className="ios-group-title">Payment Direction</div>
                 <div className="ios-card-grouped" style={{ padding: 6 }}>
                   <div className="ios-segmented">
-                    <button
-                      type="button"
-                      className={`ios-segmented-item ${paymentForm.type === 'received' ? 'active' : ''}`}
-                      onClick={() => setPaymentForm({ ...paymentForm, type: 'received' })}
-                    >
-                      Payment Rcvd (Inflow)
-                    </button>
-                    <button
-                      type="button"
-                      className={`ios-segmented-item ${paymentForm.type === 'paid' ? 'active' : ''}`}
-                      onClick={() => setPaymentForm({ ...paymentForm, type: 'paid' })}
-                    >
-                      Payment Paid (Outflow)
-                    </button>
+                    {isSupplier ? (
+                      <>
+                        <button
+                          type="button"
+                          className={`ios-segmented-item ${paymentForm.type === 'paid' ? 'active' : ''}`}
+                          onClick={() => setPaymentForm({ ...paymentForm, type: 'paid' })}
+                        >
+                          Payment Paid (Outflow)
+                        </button>
+                        <button
+                          type="button"
+                          className={`ios-segmented-item ${paymentForm.type === 'received' ? 'active' : ''}`}
+                          onClick={() => setPaymentForm({ ...paymentForm, type: 'received' })}
+                        >
+                          Payment Rcvd (Refund)
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className={`ios-segmented-item ${paymentForm.type === 'received' ? 'active' : ''}`}
+                          onClick={() => setPaymentForm({ ...paymentForm, type: 'received' })}
+                        >
+                          Payment Rcvd (Inflow)
+                        </button>
+                        <button
+                          type="button"
+                          className={`ios-segmented-item ${paymentForm.type === 'paid' ? 'active' : ''}`}
+                          onClick={() => setPaymentForm({ ...paymentForm, type: 'paid' })}
+                        >
+                          Payment Paid (Outflow)
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1112,10 +1665,309 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                   </div>
                 </div>
                 <div className="ios-group-footnote">
-                  Recorded payments update the factory's ledger balance and payment receipts instantly.
+                  {isSupplier
+                    ? 'Recorded payments update what you owe this supplier and payment receipts instantly.'
+                    : "Recorded payments update the factory's ledger balance and payment receipts instantly."}
                 </div>
               </div>
             </form>
+          </div>
+        </>
+      )}
+
+      {/* ── Add/Edit Inward Stock Sheet (Supplier Delivery) ── */}
+      {isAddingStock && (
+        <>
+          <div className="ios-modal-backdrop" onClick={() => setIsAddingStock(false)} />
+          <div className="ios-bottom-sheet" style={{ maxHeight: '92vh', display: 'flex', flexDirection: 'column' }}>
+            <div className="ios-sheet-handle" />
+            <div className="ios-sheet-header" style={{ flexShrink: 0 }}>
+              <button
+                type="button"
+                onClick={() => setIsAddingStock(false)}
+                className="ios-nav-action"
+                style={{ fontWeight: 400 }}
+              >
+                Cancel
+              </button>
+              <span style={{ fontSize: 17, fontWeight: 600, color: 'var(--label-primary)' }}>
+                {stockForm.id ? 'Edit Inward Delivery' : 'Record Inward Delivery'}
+              </span>
+              <button
+                type="button"
+                onClick={() => handleSaveStock()}
+                disabled={!stockForm.weight || cleanNumber(stockForm.weight) <= 0 || !stockForm.rate || cleanNumber(stockForm.rate) <= 0}
+                className="ios-nav-action"
+                style={{ fontWeight: 600 }}
+              >
+                Done
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveStock} className="ios-sheet-body" style={{ flex: 1, overflowY: 'auto', padding: '14px 0 36px' }}>
+              <div className="ios-group" style={{ marginTop: 0 }}>
+                <div className="ios-group-title">Supplier & Date</div>
+                <div className="ios-card-grouped">
+                  <div style={{ padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 15, color: 'var(--label-secondary)' }}>Supplier</span>
+                    <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)' }}>{party.name}</span>
+                  </div>
+                  <div className="ios-separator" />
+                  <IOSDatePicker
+                    label="Delivery Date"
+                    value={stockForm.date}
+                    onChange={(val) => setStockForm({ ...stockForm, date: val })}
+                    style={{ padding: '12px 16px' }}
+                    inputStyle={{ textAlign: 'right', color: 'var(--ios-blue)' }}
+                  />
+                </div>
+              </div>
+
+              <div className="ios-group">
+                <div className="ios-group-title">Truck & Logistics</div>
+                <div className="ios-card-grouped">
+                  <div style={{ padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 16, color: 'var(--label-primary)' }}>Truck Number</span>
+                    <input
+                      type="text"
+                      placeholder="e.g. TK-4821"
+                      value={stockForm.truckNumber}
+                      onChange={(e) => setStockForm({ ...stockForm, truckNumber: e.target.value.toUpperCase() })}
+                      style={{ border: 'none', background: 'transparent', fontSize: 16, fontWeight: 600, textAlign: 'right', color: 'var(--label-primary)', outline: 'none', maxWidth: 160 }}
+                      autoFocus={!stockForm.id}
+                    />
+                  </div>
+                  <div className="ios-separator" />
+                  <div style={{ padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 16, color: 'var(--label-primary)' }}>Mine / Source</span>
+                    <input
+                      type="text"
+                      placeholder="e.g. Chakwal / Quetta"
+                      value={stockForm.mineName}
+                      onChange={(e) => setStockForm({ ...stockForm, mineName: e.target.value })}
+                      style={{ border: 'none', background: 'transparent', fontSize: 16, textAlign: 'right', color: 'var(--label-primary)', outline: 'none', maxWidth: 180 }}
+                    />
+                  </div>
+                  <div className="ios-separator" />
+                  <div style={{ padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 16, color: 'var(--label-primary)' }}>Yard / Depot</span>
+                    <input
+                      type="text"
+                      placeholder="e.g. Main Yard / Warehouse"
+                      value={stockForm.storedAt}
+                      onChange={(e) => setStockForm({ ...stockForm, storedAt: e.target.value })}
+                      style={{ border: 'none', background: 'transparent', fontSize: 16, textAlign: 'right', color: 'var(--label-primary)', outline: 'none', maxWidth: 180 }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="ios-group">
+                <div className="ios-group-title">Weight & Purchase Rate</div>
+                <div className="ios-card-grouped">
+                  <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: 16, color: 'var(--label-primary)' }}>Weight (Tons) *</span>
+                    <NumericInput
+                      required
+                      placeholder="0.00"
+                      value={stockForm.weight}
+                      onChange={(val) => setStockForm({ ...stockForm, weight: val })}
+                      style={{ border: 'none', background: 'transparent', fontSize: 19, fontWeight: 600, textAlign: 'right', color: 'var(--label-primary)', outline: 'none', maxWidth: 150 }}
+                      className="tabular-nums"
+                    />
+                  </div>
+                  <div className="ios-separator" />
+                  <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <span style={{ fontSize: 16, color: 'var(--label-primary)' }}>Rate / Ton ({curCode}) *</span>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 16, color: 'var(--label-secondary)' }}>{curSym}</span>
+                      <NumericInput
+                        required
+                        placeholder="0"
+                        value={stockForm.rate}
+                        onChange={(val) => setStockForm({ ...stockForm, rate: val })}
+                        style={{ border: 'none', background: 'transparent', fontSize: 19, fontWeight: 600, textAlign: 'right', color: 'var(--label-primary)', outline: 'none', maxWidth: 150 }}
+                        className="tabular-nums"
+                      />
+                    </div>
+                  </div>
+                  <div className="ios-separator" />
+                  <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div>
+                      <div style={{ fontSize: 16, color: 'var(--label-primary)' }}>Freight / Fare ({curCode})</div>
+                      <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Optional carriage or truck fare</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 16, color: 'var(--label-secondary)' }}>{curSym}</span>
+                      <NumericInput
+                        placeholder="0"
+                        value={stockForm.fare}
+                        onChange={(val) => setStockForm({ ...stockForm, fare: val })}
+                        style={{ border: 'none', background: 'transparent', fontSize: 19, fontWeight: 600, textAlign: 'right', color: 'var(--label-primary)', outline: 'none', maxWidth: 150 }}
+                        className="tabular-nums"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Live Inward Calculation Summary Card */}
+              {(() => {
+                const w = cleanNumber(stockForm.weight);
+                const r = cleanNumber(stockForm.rate);
+                const f = cleanNumber(stockForm.fare);
+                const matCost = w * r;
+                const totVal = Math.round(matCost + f);
+                const landed = w > 0 ? (totVal / w) : r;
+
+                return (
+                  <div className="ios-group">
+                    <div className="ios-group-title">Summary & Cost Breakdown</div>
+                    <div className="ios-card-grouped" style={{ padding: '14px 16px', background: 'var(--fill-quaternary)' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 8 }}>
+                        <span style={{ color: 'var(--label-secondary)' }}>Material Cost ({w.toFixed(2)} t × {curSym} {r.toLocaleString()})</span>
+                        <span style={{ fontWeight: 600, color: 'var(--label-primary)' }} className="tabular-nums">{curSym} {formatAmountNumber(matCost, settings)}</span>
+                      </div>
+                      {f > 0 && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 8 }}>
+                          <span style={{ color: 'var(--label-secondary)' }}>Freight / Fare</span>
+                          <span style={{ fontWeight: 600, color: 'var(--label-primary)' }} className="tabular-nums">{curSym} {formatAmountNumber(f, settings)}</span>
+                        </div>
+                      )}
+                      <div className="ios-separator" style={{ margin: '8px 0' }} />
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 16, fontWeight: 700 }}>
+                        <span style={{ color: 'var(--label-primary)' }}>Total Inward Value</span>
+                        <span style={{ color: '#FF9500' }} className="tabular-nums">{curSym} {formatAmountNumber(totVal, settings)}</span>
+                      </div>
+                      {w > 0 && f > 0 && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--label-secondary)', marginTop: 6 }}>
+                          <span>Effective Landed Cost</span>
+                          <span style={{ fontWeight: 600 }}>{curSym} {landed.toFixed(2)} / ton</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="ios-group-footnote">
+                      Saving this inward delivery automatically places the material in your inventory stock and updates what you owe this supplier.
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="ios-group">
+                <div className="ios-group-title">Notes / Remarks</div>
+                <div className="ios-card-grouped">
+                  <div style={{ padding: '10px 16px' }}>
+                    <input
+                      type="text"
+                      placeholder="e.g. Weighbridge slip #4192, Bilty ref"
+                      value={stockForm.notes}
+                      onChange={(e) => setStockForm({ ...stockForm, notes: e.target.value })}
+                      style={{ width: '100%', border: 'none', background: 'transparent', fontSize: 16, color: 'var(--label-primary)', outline: 'none' }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </form>
+          </div>
+        </>
+      )}
+
+      {/* ── PREVIEW: Inward Stock Delivery (Lot) ── */}
+      {previewLot && (
+        <>
+          <div className="ios-modal-backdrop" onClick={() => setPreviewLot(null)} />
+          <div className="ios-bottom-sheet" style={{ background: 'var(--bg-card)', borderTopLeftRadius: 24, borderTopRightRadius: 24 }}>
+            <div className="ios-sheet-handle" />
+            <div className="ios-sheet-header" style={{ borderBottom: '0.5px solid var(--separator)', padding: '10px 16px 12px' }}>
+              <button onClick={() => setPreviewLot(null)} className="ios-nav-action" style={{ fontWeight: 400 }}>Close</button>
+              <span style={{ fontSize: 17, fontWeight: 700 }}>Delivery Receipt</span>
+              <button onClick={() => openEditLot(previewLot)} className="ios-nav-action" style={{ fontWeight: 600 }}>Edit</button>
+            </div>
+            <div className="ios-sheet-body" style={{ padding: '20px 16px' }}>
+              <div style={{ textAlign: 'center', margin: '14px 0 24px' }}>
+                <div style={{ width: 64, height: 64, margin: '0 auto 14px', borderRadius: '50%', background: '#FF9500', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Package style={{ color: 'white' }} size={32} />
+                </div>
+                <div style={{ fontSize: 14, color: 'var(--label-secondary)', textTransform: 'uppercase', fontWeight: 600 }}>
+                  {previewLot.truckNumber ? `Truck ${previewLot.truckNumber}` : 'Inward Stock Delivery'}
+                </div>
+                <div style={{ fontSize: 34, fontWeight: 800, color: 'var(--label-primary)', margin: '6px 0' }}>
+                  {curSym} {formatAmountNumber(previewLot.totalValue || ((previewLot.receivedWeight || previewLot.billedWeight || 0) * (previewLot.purchaseRate || previewLot.ratePerTon || 0) + (previewLot.freightCost || 0)), settings)}
+                </div>
+                <div style={{ fontSize: 15, color: 'var(--label-secondary)' }}>
+                  {formatDisplayDate(previewLot.date)} • {party.name}
+                </div>
+              </div>
+
+              {/* Delivery Specifications Card */}
+              <div className="ios-group" style={{ margin: '0 0 20px' }}>
+                <div className="ios-card-grouped" style={{ padding: '12px 16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 8 }}>
+                    <span style={{ color: 'var(--label-secondary)' }}>Delivered Weight</span>
+                    <span style={{ fontWeight: 600, color: 'var(--label-primary)' }}>{(previewLot.receivedWeight || previewLot.billedWeight || 0).toFixed(2)} tons</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 8 }}>
+                    <span style={{ color: 'var(--label-secondary)' }}>Purchase Rate</span>
+                    <span style={{ fontWeight: 600, color: 'var(--label-primary)' }}>{curSym} {(previewLot.purchaseRate || previewLot.ratePerTon || 0).toLocaleString()} / ton</span>
+                  </div>
+                  {previewLot.freightCost && previewLot.freightCost > 0 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 8 }}>
+                      <span style={{ color: 'var(--label-secondary)' }}>Freight / Fare</span>
+                      <span style={{ fontWeight: 600, color: 'var(--label-primary)' }}>{curSym} {formatAmountNumber(previewLot.freightCost, settings)}</span>
+                    </div>
+                  )}
+                  {previewLot.landedRate && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 8 }}>
+                      <span style={{ color: 'var(--label-secondary)' }}>Effective Landed Rate</span>
+                      <span style={{ fontWeight: 600, color: '#FF9500' }}>{curSym} {previewLot.landedRate.toFixed(2)} / ton</span>
+                    </div>
+                  )}
+                  {(previewLot.mineName || previewLot.mineSource) && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 8 }}>
+                      <span style={{ color: 'var(--label-secondary)' }}>Mine / Source</span>
+                      <span style={{ fontWeight: 500, color: 'var(--label-primary)' }}>{previewLot.mineName || previewLot.mineSource}</span>
+                    </div>
+                  )}
+                  {previewLot.storedAt && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 8 }}>
+                      <span style={{ color: 'var(--label-secondary)' }}>Stored At (Yard)</span>
+                      <span style={{ fontWeight: 500, color: 'var(--label-primary)' }}>{previewLot.storedAt}</span>
+                    </div>
+                  )}
+                  {previewLot.notes && (
+                    <>
+                      <div className="ios-separator" style={{ margin: '8px 0' }} />
+                      <div style={{ fontSize: 13, color: 'var(--label-secondary)' }}>
+                        <strong>Notes:</strong> {previewLot.notes}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => openEditLot(previewLot)}
+                  className="ios-btn ios-btn-secondary"
+                  style={{ width: '100%', padding: 14, fontSize: 15, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                >
+                  <Edit2 size={16} /> Edit Inward Delivery
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    playPopSound();
+                    setDeleteTarget({ type: 'lot', id: previewLot.id, label: previewLot.truckNumber || 'Stock Delivery' });
+                  }}
+                  className="ios-btn ios-btn-destructive"
+                  style={{ width: '100%', padding: 14, fontSize: 15, borderRadius: 14, background: 'var(--ios-red)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                >
+                  <Trash2 size={16} /> Delete Delivery Record
+                </button>
+              </div>
+            </div>
           </div>
         </>
       )}
@@ -1128,7 +1980,9 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
           name: party.name,
           contactPerson: party.contactPerson,
           phone: party.phone,
-          address: party.address
+          address: party.address,
+          type: party.type || 'buyer',
+          materialIds: party.materialIds,
         } : undefined}
         onClose={() => setIsEditingParty(false)}
         onSave={async (data) => {
@@ -1138,7 +1992,9 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
             name: data.name,
             contactPerson: data.contactPerson,
             phone: data.phone,
-            address: data.address
+            address: data.address,
+            type: data.type || 'buyer',
+            materialIds: data.materialIds,
           };
           await saveParty(updatedParty);
           setParty(updatedParty);
@@ -1592,123 +2448,19 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
         </>
       )}
 
-      {/* ── SHARE ACCOUNT STATEMENT ACTION SHEET ── */}
-      {isShareSheetOpen && (
-        <>
-          <div className="ios-modal-backdrop" onClick={() => setIsShareSheetOpen(false)} style={{ zIndex: 99998 }} />
-          <div className="ios-bottom-sheet" style={{ zIndex: 99999, background: 'var(--bg-grouped)', borderTopLeftRadius: 24, borderTopRightRadius: 24 }}>
-            <div className="ios-sheet-handle" />
-            <div className="ios-sheet-header" style={{ borderBottom: '0.5px solid var(--separator)', padding: '12px 16px', background: 'var(--bg-grouped)' }}>
-              <span style={{ fontSize: 17, fontWeight: 700, margin: '0 auto' }}>Share Account Statement</span>
-            </div>
-
-            <div style={{ padding: '16px 16px 36px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div style={{ background: 'var(--bg-card)', borderRadius: 16, border: '0.5px solid var(--separator)', padding: '16px', marginBottom: 6 }}>
-                <div style={{ fontSize: 13, color: 'var(--label-secondary)', textTransform: 'uppercase', fontWeight: 600 }}>Recipient</div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--label-primary)', marginTop: 2 }}>{party.name}</div>
-                <div style={{ fontSize: 14, color: 'var(--label-secondary)', marginTop: 2 }}>
-                  Net Balance: <strong style={{ color: outstandingBalance > 0 ? 'var(--label-primary)' : 'var(--ios-green)' }}>{curSym} {formatAmountNumber(Math.abs(outstandingBalance), settings)}</strong> ({outstandingBalance > 0 ? 'Receivable' : 'Settled'})
-                </div>
-              </div>
-
-              <button
-                onClick={handleCopyStatement}
-                className="ios-btn"
-                style={{ width: '100%', padding: 15, fontSize: 16, borderRadius: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: 'var(--ios-green)' }}
-              >
-                <Copy size={18} /> Copy WhatsApp Statement
-              </button>
-
-              <button
-                onClick={async () => {
-                  try {
-                    const freshSettings = await getSettings();
-                    setSettings(freshSettings);
-                    await exportDispatchesPdf({
-                      party: party || undefined,
-                      partyName: party.name,
-                      title: `${party.name.toUpperCase()} - STATEMENT OF ACCOUNT`,
-                      dispatches,
-                      payments,
-                      parties: party ? [party] : [],
-                      pos,
-                      settings: freshSettings,
-                    });
-                    playSuccessSound();
-                    setIsShareSheetOpen(false);
-                    showToast('PDF Statement ready to share!');
-                  } catch (err) {
-                    console.error('PDF export failed:', err);
-                  }
-                }}
-                className="ios-btn"
-                style={{
-                  width: '100%',
-                  padding: 15,
-                  fontSize: 16,
-                  borderRadius: 14,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 10,
-                  background: '#f76970ff',
-                  color: 'white',
-                  fontWeight: 600,
-                }}
-              >
-                <FileText size={18} /> Export as PDF Statement
-              </button>
-
-              <button
-                onClick={async () => {
-                  try {
-                    const freshSettings = await getSettings();
-                    setSettings(freshSettings);
-                    await exportDispatchesPdf({
-                      party: party || undefined,
-                      partyName: party.name,
-                      title: `${party.name.toUpperCase()} - STATEMENT OF ACCOUNT`,
-                      dispatches,
-                      payments,
-                      parties: party ? [party] : [],
-                      pos,
-                      settings: freshSettings,
-                    });
-                    playSuccessSound();
-                    setIsShareSheetOpen(false);
-                    showToast('Excel Spreadsheet ready to share!');
-                  } catch (err) {
-                    console.error('Excel export failed:', err);
-                  }
-                }}
-                className="ios-btn"
-                style={{
-                  width: '100%',
-                  padding: 15,
-                  fontSize: 16,
-                  borderRadius: 14,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: 10,
-                  background: 'var(--ios-blue)',
-                  color: 'white',
-                  fontWeight: 600,
-                }}
-              >
-                <FileSpreadsheet size={18} /> Export as Excel (.xlsx)
-              </button>
-
-              <button
-                onClick={() => setIsShareSheetOpen(false)}
-                className="ios-btn"
-                style={{ width: '100%', padding: 14, fontSize: 16, borderRadius: 14, background: 'var(--fill-primary)', color: 'var(--label-primary)', marginTop: 4 }}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </>
+      {/* ── SHARE ACCOUNT STATEMENT ACTION SHEET WITH DATE RANGE ── */}
+      {party && (
+        <ExportDateRangeSheet
+          isOpen={isShareSheetOpen}
+          onClose={() => setIsShareSheetOpen(false)}
+          party={party}
+          dispatches={dispatches}
+          payments={payments}
+          pos={pos}
+          lots={partyLots}
+          settings={settings}
+          onShowToast={showToast}
+        />
       )}
 
 
@@ -1744,14 +2496,18 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
             ? 'Delete Dispatch Record?'
             : deleteTarget?.type === 'payment'
               ? 'Delete Payment Entry?'
-              : 'Delete Purchase Order?'
+              : deleteTarget?.type === 'lot'
+                ? 'Delete Stock Delivery?'
+                : 'Delete Purchase Order?'
         }
         message={
           deleteTarget?.type === 'dispatch'
             ? `Are you sure you want to delete dispatch record${deleteTarget?.label ? ` for truck ${deleteTarget.label}` : ''}? This action cannot be undone.`
             : deleteTarget?.type === 'payment'
               ? 'Are you sure you want to delete this payment entry? The ledger balance will be automatically updated.'
-              : `Are you sure you want to delete Purchase Order ${deleteTarget?.label || ''}? Related dispatches will remain in the database.`
+              : deleteTarget?.type === 'lot'
+                ? `Are you sure you want to delete inward delivery${deleteTarget?.label ? ` for truck ${deleteTarget.label}` : ''}? This stock will be removed from inventory and supplier balance.`
+                : `Are you sure you want to delete Purchase Order ${deleteTarget?.label || ''}? Related dispatches will remain in the database.`
         }
         confirmText="Delete"
         cancelText="Cancel"
@@ -1766,14 +2522,19 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
         const cDisp = dispatches.length;
         const cPay = payments.length;
         const cPo = pos.length;
-        const hasRecords = cDisp > 0 || cPay > 0 || cPo > 0;
+        const cLots = partyLots.length;
+        const hasRecords = cDisp > 0 || cPay > 0 || cPo > 0 || cLots > 0;
 
         if (hasRecords) {
+          const recSummary = isSupplier
+            ? `${cLots} stock delivery(ies) and ${cPay} payment(s)`
+            : `${cDisp} dispatch(es), ${cPay} payment(s), and ${cPo} PO(s)`;
+
           return (
             <IOSConfirmModal
               isOpen={Boolean(partyToDelete)}
               title="Party Has Existing Records"
-              message={`"${partyToDelete.name}" has ${cDisp} dispatch(es), ${cPay} payment(s), and ${cPo} PO(s). You can't delete this party because it has existing transactions. To delete the party you have to delete all the records first. Right now you can archive the party only.`}
+              message={`"${partyToDelete.name}" has ${recSummary}. You can't delete this party because it has existing transactions. To delete the party you have to delete all the records first. Right now you can archive the party only.`}
               confirmText="Archive Party"
               cancelText="Cancel"
               destructive={false}
