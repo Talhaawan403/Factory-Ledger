@@ -47,7 +47,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     private void handleDevSeedIntent(Intent intent) {
-        if (intent == null) return;
+        if (!BuildConfig.DEBUG || intent == null) return;
         boolean hasDevSeedExtra = intent.getBooleanExtra("devSeed", false);
         Uri data = intent.getData();
         boolean hasDevSeedUri = data != null && "factoryledger".equals(data.getScheme()) && "seed".equals(data.getHost());

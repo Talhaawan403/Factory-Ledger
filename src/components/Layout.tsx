@@ -358,7 +358,7 @@ export default function Layout() {
       });
 
       CapApp.addListener('appUrlOpen', async (data) => {
-        if (data.url && (data.url.includes('seed') || data.url.includes('devSeed'))) {
+        if (import.meta.env.DEV && data.url && (data.url.includes('seed') || data.url.includes('devSeed'))) {
           if (typeof (window as any).seedTestData === 'function') {
             await (window as any).seedTestData({ reload: true, clearBeforeSeed: true });
           }

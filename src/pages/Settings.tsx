@@ -1594,294 +1594,6 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* ── ACCORDION 2: Security & App Lock (Fingerprint + Passcode) ── */}
-      <div className="ios-group" style={{ marginBottom: 14 }}>
-        <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
-          <div
-            className="ios-cell"
-            onClick={() => toggleSection('security')}
-            style={{
-              cursor: 'pointer',
-              userSelect: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '13px 16px',
-              minHeight: 54,
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-              <div className="ios-glyph-badge" style={{ background: 'var(--ios-indigo)', flexShrink: 0 }}>
-                {appLockActive ? <Fingerprint size={19} /> : <Lock size={18} />}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
-                  Security & App Lock
-                </span>
-                {!openSections['security'] && (
-                  <span style={{ fontSize: 12, color: appLockActive ? 'var(--ios-green)' : 'var(--label-secondary)', marginTop: 1 }}>
-                    {appLockActive
-                      ? bioActive
-                        ? `Active · ${pinLength}-Digit PIN + Fingerprint Unlock`
-                        : `Active · ${pinLength}-Digit Passcode PIN`
-                      : 'Disabled · Protect ledgers with 5-digit PIN'}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-              {!openSections['security'] && (
-                <span
-                  style={{
-                    fontSize: 12,
-                    fontWeight: 600,
-                    padding: '3px 8px',
-                    borderRadius: 10,
-                    background: appLockActive ? 'var(--ios-green)' : 'var(--fill-tertiary)',
-                    color: appLockActive ? '#FFFFFF' : 'var(--label-secondary)',
-                  }}
-                >
-                  {appLockActive ? 'Locked' : 'Off'}
-                </span>
-              )}
-              <ChevronDown
-                style={{
-                  width: 18,
-                  height: 18,
-                  color: 'var(--label-tertiary)',
-                  transform: openSections['security'] ? 'rotate(180deg)' : 'rotate(0deg)',
-                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-                }}
-                strokeWidth={2.4}
-              />
-            </div>
-            {openSections['security'] && <div className="ios-separator with-glyph" />}
-          </div>
-
-          {openSections['security'] && (
-            <div>
-              {/* Require App Lock Toggle */}
-              <div className="ios-cell" onClick={() => { void handleToggleAppLock(); }} style={{ cursor: 'pointer' }}>
-                <div className="ios-glyph-badge" style={{ background: appLockActive ? 'var(--ios-green)' : 'var(--fill-secondary)' }}>
-                  <Lock size={18} color="#FFFFFF" />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <span className="ios-cell-label">Require App Passcode</span>
-                  <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
-                    Locks app when closed or backgrounded
-                  </div>
-                </div>
-                {/* iOS Switch */}
-                <div
-                  style={{
-                    width: 51,
-                    height: 31,
-                    borderRadius: 31,
-                    background: appLockActive ? 'var(--ios-green)' : 'var(--fill-primary)',
-                    position: 'relative',
-                    transition: 'background 0.25s ease',
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 27,
-                      height: 27,
-                      borderRadius: '50%',
-                      background: '#FFFFFF',
-                      position: 'absolute',
-                      top: 2,
-                      left: appLockActive ? 22 : 2,
-                      boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
-                      transition: 'left 0.25s ease',
-                    }}
-                  />
-                </div>
-                <div className="ios-separator with-glyph" />
-              </div>
-
-              {appLockActive && (
-                <>
-                  {/* Fingerprint / Biometric Toggle */}
-                  <div className="ios-cell" onClick={handleToggleBiometrics} style={{ cursor: 'pointer' }}>
-                    <div className="ios-glyph-badge" style={{ background: 'var(--ios-blue)' }}>
-                      <Fingerprint size={19} color="#FFFFFF" />
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <span className="ios-cell-label">Fingerprint / Biometric Unlock</span>
-                      <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
-                        {isBioHardwareAvailable ? 'Device sensor available' : 'Biometric authentication on supported devices'}
-                      </div>
-                    </div>
-                    {/* iOS Switch */}
-                    <div
-                      style={{
-                        width: 51,
-                        height: 31,
-                        borderRadius: 31,
-                        background: bioActive ? 'var(--ios-green)' : 'var(--fill-primary)',
-                        position: 'relative',
-                        transition: 'background 0.25s ease',
-                      }}
-                    >
-                      <div
-                        style={{
-                          width: 27,
-                          height: 27,
-                          borderRadius: '50%',
-                          background: '#FFFFFF',
-                          position: 'absolute',
-                          top: 2,
-                          left: bioActive ? 22 : 2,
-                          boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
-                          transition: 'left 0.25s ease',
-                        }}
-                      />
-                    </div>
-                    <div className="ios-separator with-glyph" />
-                  </div>
-
-                  {/* Change / Upgrade Passcode Row */}
-                  <div
-                    className="ios-cell"
-                    onClick={() => {
-                      playPopSound();
-                      setIsChangingPasscode(true);
-                      setShowPasscodeModal(true);
-                    }}
-                    style={{ cursor: 'pointer' }}
-                  >
-                    <div className="ios-glyph-badge" style={{ background: pinLength === 4 ? '#FF9F0A' : 'var(--ios-orange)' }}>
-                      <ShieldCheck size={18} color="#FFFFFF" />
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <span className="ios-cell-label">
-                        {pinLength === 4 ? 'Upgrade to 5-Digit Passcode' : 'Change 5-Digit Passcode'}
-                      </span>
-                      <div style={{ fontSize: 12, color: pinLength === 4 ? '#FF9F0A' : 'var(--label-secondary)', marginTop: 1 }}>
-                        {pinLength === 4 ? 'Using legacy 4-digit PIN · Tap to upgrade to 5 digits' : 'Protects Factory Ledger on this device'}
-                      </div>
-                    </div>
-                    <span style={{ fontSize: 14, color: 'var(--ios-blue)', fontWeight: 600 }}>
-                      {pinLength === 4 ? 'Upgrade' : 'Update'}
-                    </span>
-                    <div className="ios-separator with-glyph" />
-                  </div>
-
-                  {/* Auto-Lock Timeout Row */}
-                  <div className="ios-cell" style={{ cursor: 'default', flexDirection: 'column', alignItems: 'flex-start', padding: '12px 16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: 10 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                        <div className="ios-glyph-badge" style={{ background: 'var(--ios-teal)' }}>
-                          <Sliders size={18} color="#FFFFFF" />
-                        </div>
-                        <div>
-                          <div className="ios-cell-label">Auto-Lock Interval</div>
-                          <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Lock app when inactive</div>
-                        </div>
-                      </div>
-                    </div>
-                    {/* Segmented Picker */}
-                    <div
-                      style={{
-                        width: '100%',
-                        display: 'flex',
-                        background: 'var(--fill-tertiary)',
-                        borderRadius: 10,
-                        padding: 3,
-                        gap: 4,
-                      }}
-                    >
-                      {[
-                        { sec: 0, label: 'Immediately' },
-                        { sec: 60, label: '1 Minute' },
-                        { sec: 300, label: '5 Minutes' },
-                      ].map((item) => {
-                        const active = lockTimeoutSec === item.sec;
-                        return (
-                          <button
-                            key={item.sec}
-                            type="button"
-                            onClick={() => handleTimeoutChange(item.sec)}
-                            style={{
-                              flex: 1,
-                              padding: '7px 4px',
-                              borderRadius: 8,
-                              border: 'none',
-                              background: active ? 'var(--bg-card)' : 'transparent',
-                              color: active ? 'var(--label-primary)' : 'var(--label-secondary)',
-                              fontSize: 13,
-                              fontWeight: active ? 600 : 500,
-                              cursor: 'pointer',
-                              boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
-                            }}
-                          >
-                            {item.label}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <div className="ios-separator with-glyph" style={{ marginTop: 8 }} />
-                  </div>
-
-                  {/* Test Lock Screen Action 
-                  <div className="ios-cell" onClick={handleTestLockNow} style={{ cursor: 'pointer' }}>
-                    <div className="ios-glyph-badge" style={{ background: 'var(--ios-blue)' }}>
-                      <Sparkles size={18} color="#FFFFFF" />
-                    </div>
-                    <span className="ios-cell-label" style={{ color: 'var(--ios-blue)', fontWeight: 600 }}>
-                      Lock App Now (Test Security)
-                    </span>
-                  </div> */}
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* ── ACCORDION 3: Materials & Pricing ── */}
-      <div className="ios-group" style={{ marginBottom: 14 }}>
-        <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
-          <div
-            className="ios-cell"
-            onClick={() => toggleSection('materials')}
-            style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 16px', minHeight: 54 }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-              <div className="ios-glyph-badge" style={{ background: 'var(--ios-orange)', flexShrink: 0 }}>
-                <Layers size={18} color="#FFFFFF" />
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
-                  Material Catalogue
-                </span>
-                {!openSections['materials'] && (
-                  <span style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
-                    {(settings.materialItems?.filter((item) => item.isActive !== false).length || 4)} active materials
-                  </span>
-                )}
-              </div>
-            </div>
-            <ChevronDown
-              style={{ width: 18, height: 18, color: 'var(--label-tertiary)', transform: openSections['materials'] ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)' }}
-              strokeWidth={2.4}
-            />
-            {openSections['materials'] && <div className="ios-separator with-glyph" />}
-          </div>
-          {openSections['materials'] && (
-            <MaterialSettingsPanel
-              settings={settings}
-              onSave={async (nextSettings) => {
-                await saveSettings(nextSettings);
-                setSettings(nextSettings);
-                showToast('Material catalogue saved');
-              }}
-            />
-          )}
-        </div>
-      </div>
-
       {/* ── ACCORDION 4: Business Profile & Invoicing ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
@@ -2003,31 +1715,6 @@ export default function Settings() {
                 />
                 <div className="ios-separator with-glyph" />
               </div>
-
-              {/* NTN / STRN 
-              <div className="ios-cell" style={{ cursor: 'default' }}>
-                <div className="ios-glyph-badge" style={{ background: 'var(--ios-indigo)' }}>
-                  <FileText size={18} color="#FFFFFF" />
-                </div>
-                <span className="ios-cell-label">NTN / STRN #</span>
-                <input
-                  type="text"
-                  value={settings.ntnNumber || ''}
-                  onChange={(e) => handleChange('ntnNumber', e.target.value)}
-                  onBlur={handleAutoSave}
-                  placeholder="e.g. 7482910-3"
-                  style={{
-                    border: 'none',
-                    background: 'transparent',
-                    fontSize: 16,
-                    textAlign: 'right',
-                    color: 'var(--label-primary)',
-                    outline: 'none',
-                    maxWidth: 200,
-                  }}
-                />
-                <div className="ios-separator with-glyph" />
-              </div> */}
 
               {/* Direct Phone */}
               <div className="ios-cell" style={{ cursor: 'default' }}>
@@ -2265,7 +1952,285 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* ── ACCORDION 4: Appearance & Sound ── */}
+      {/* ── ACCORDION 2: Security & App Lock (Fingerprint + Passcode) ── */}
+      <div className="ios-group" style={{ marginBottom: 14 }}>
+        <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
+          <div
+            className="ios-cell"
+            onClick={() => toggleSection('security')}
+            style={{
+              cursor: 'pointer',
+              userSelect: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '13px 16px',
+              minHeight: 54,
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+              <div className="ios-glyph-badge" style={{ background: 'var(--ios-indigo)', flexShrink: 0 }}>
+                {appLockActive ? <Fingerprint size={19} /> : <Lock size={18} />}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
+                  Security & App Lock
+                </span>
+                {!openSections['security'] && (
+                  <span style={{ fontSize: 12, color: appLockActive ? 'var(--ios-green)' : 'var(--label-secondary)', marginTop: 1 }}>
+                    {appLockActive
+                      ? bioActive
+                        ? `Active · ${pinLength}-Digit PIN + Fingerprint Unlock`
+                        : `Active · ${pinLength}-Digit Passcode PIN`
+                      : 'Disabled · Protect ledgers with 5-digit PIN'}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+              {!openSections['security'] && (
+                <span
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    padding: '3px 8px',
+                    borderRadius: 10,
+                    background: appLockActive ? 'var(--ios-green)' : 'var(--fill-tertiary)',
+                    color: appLockActive ? '#FFFFFF' : 'var(--label-secondary)',
+                  }}
+                >
+                  {appLockActive ? 'Locked' : 'Off'}
+                </span>
+              )}
+              <ChevronDown
+                style={{
+                  width: 18,
+                  height: 18,
+                  color: 'var(--label-tertiary)',
+                  transform: openSections['security'] ? 'rotate(180deg)' : 'rotate(0deg)',
+                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+                }}
+                strokeWidth={2.4}
+              />
+            </div>
+            {openSections['security'] && <div className="ios-separator with-glyph" />}
+          </div>
+
+          {openSections['security'] && (
+            <div>
+              {/* Require App Lock Toggle */}
+              <div className="ios-cell" onClick={() => { void handleToggleAppLock(); }} style={{ cursor: 'pointer' }}>
+                <div className="ios-glyph-badge" style={{ background: appLockActive ? 'var(--ios-green)' : 'var(--fill-secondary)' }}>
+                  <Lock size={18} color="#FFFFFF" />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <span className="ios-cell-label">Require App Passcode</span>
+                  <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
+                    Locks app when closed or backgrounded
+                  </div>
+                </div>
+                {/* iOS Switch */}
+                <div
+                  style={{
+                    width: 51,
+                    height: 31,
+                    borderRadius: 31,
+                    background: appLockActive ? 'var(--ios-green)' : 'var(--fill-primary)',
+                    position: 'relative',
+                    transition: 'background 0.25s ease',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 27,
+                      height: 27,
+                      borderRadius: '50%',
+                      background: '#FFFFFF',
+                      position: 'absolute',
+                      top: 2,
+                      left: appLockActive ? 22 : 2,
+                      boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
+                      transition: 'left 0.25s ease',
+                    }}
+                  />
+                </div>
+                <div className="ios-separator with-glyph" />
+              </div>
+
+              {appLockActive && (
+                <>
+                  {/* Fingerprint / Biometric Toggle */}
+                  <div className="ios-cell" onClick={handleToggleBiometrics} style={{ cursor: 'pointer' }}>
+                    <div className="ios-glyph-badge" style={{ background: 'var(--ios-blue)' }}>
+                      <Fingerprint size={19} color="#FFFFFF" />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span className="ios-cell-label">Fingerprint / Biometric Unlock</span>
+                      <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
+                        {isBioHardwareAvailable ? 'Device sensor available' : 'Biometric authentication on supported devices'}
+                      </div>
+                    </div>
+                    {/* iOS Switch */}
+                    <div
+                      style={{
+                        width: 51,
+                        height: 31,
+                        borderRadius: 31,
+                        background: bioActive ? 'var(--ios-green)' : 'var(--fill-primary)',
+                        position: 'relative',
+                        transition: 'background 0.25s ease',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: 27,
+                          height: 27,
+                          borderRadius: '50%',
+                          background: '#FFFFFF',
+                          position: 'absolute',
+                          top: 2,
+                          left: bioActive ? 22 : 2,
+                          boxShadow: '0 2px 5px rgba(0,0,0,0.2)',
+                          transition: 'left 0.25s ease',
+                        }}
+                      />
+                    </div>
+                    <div className="ios-separator with-glyph" />
+                  </div>
+
+                  {/* Change / Upgrade Passcode Row */}
+                  <div
+                    className="ios-cell"
+                    onClick={() => {
+                      playPopSound();
+                      setIsChangingPasscode(true);
+                      setShowPasscodeModal(true);
+                    }}
+                    style={{ cursor: 'pointer' }}
+                  >
+                    <div className="ios-glyph-badge" style={{ background: pinLength === 4 ? '#FF9F0A' : 'var(--ios-orange)' }}>
+                      <ShieldCheck size={18} color="#FFFFFF" />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <span className="ios-cell-label">
+                        {pinLength === 4 ? 'Upgrade to 5-Digit Passcode' : 'Change 5-Digit Passcode'}
+                      </span>
+                      <div style={{ fontSize: 12, color: pinLength === 4 ? '#FF9F0A' : 'var(--label-secondary)', marginTop: 1 }}>
+                        {pinLength === 4 ? 'Using legacy 4-digit PIN · Tap to upgrade to 5 digits' : 'Protects Factory Ledger on this device'}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: 14, color: 'var(--ios-blue)', fontWeight: 600 }}>
+                      {pinLength === 4 ? 'Upgrade' : 'Update'}
+                    </span>
+                    <div className="ios-separator with-glyph" />
+                  </div>
+
+                  {/* Auto-Lock Timeout Row */}
+                  <div className="ios-cell" style={{ cursor: 'default', flexDirection: 'column', alignItems: 'flex-start', padding: '12px 16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginBottom: 10 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        <div className="ios-glyph-badge" style={{ background: 'var(--ios-teal)' }}>
+                          <Sliders size={18} color="#FFFFFF" />
+                        </div>
+                        <div>
+                          <div className="ios-cell-label">Auto-Lock Interval</div>
+                          <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Lock app when inactive</div>
+                        </div>
+                      </div>
+                    </div>
+                    {/* Segmented Picker */}
+                    <div
+                      style={{
+                        width: '100%',
+                        display: 'flex',
+                        background: 'var(--fill-tertiary)',
+                        borderRadius: 10,
+                        padding: 3,
+                        gap: 4,
+                      }}
+                    >
+                      {[
+                        { sec: 0, label: 'Immediately' },
+                        { sec: 60, label: '1 Minute' },
+                        { sec: 300, label: '5 Minutes' },
+                      ].map((item) => {
+                        const active = lockTimeoutSec === item.sec;
+                        return (
+                          <button
+                            key={item.sec}
+                            type="button"
+                            onClick={() => handleTimeoutChange(item.sec)}
+                            style={{
+                              flex: 1,
+                              padding: '7px 4px',
+                              borderRadius: 8,
+                              border: 'none',
+                              background: active ? 'var(--bg-card)' : 'transparent',
+                              color: active ? 'var(--label-primary)' : 'var(--label-secondary)',
+                              fontSize: 13,
+                              fontWeight: active ? 600 : 500,
+                              cursor: 'pointer',
+                              boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+                            }}
+                          >
+                            {item.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="ios-separator with-glyph" style={{ marginTop: 8 }} />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── ACCORDION 3: Materials & Pricing ── */}
+      <div className="ios-group" style={{ marginBottom: 14 }}>
+        <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
+          <div
+            className="ios-cell"
+            onClick={() => toggleSection('materials')}
+            style={{ cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 16px', minHeight: 54 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+              <div className="ios-glyph-badge" style={{ background: 'var(--ios-orange)', flexShrink: 0 }}>
+                <Layers size={18} color="#FFFFFF" />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+                <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
+                  Material Catalogue
+                </span>
+                {!openSections['materials'] && (
+                  <span style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
+                    {(settings.materialItems?.filter((item) => item.isActive !== false).length || 4)} active materials
+                  </span>
+                )}
+              </div>
+            </div>
+            <ChevronDown
+              style={{ width: 18, height: 18, color: 'var(--label-tertiary)', transform: openSections['materials'] ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)' }}
+              strokeWidth={2.4}
+            />
+            {openSections['materials'] && <div className="ios-separator with-glyph" />}
+          </div>
+          {openSections['materials'] && (
+            <MaterialSettingsPanel
+              settings={settings}
+              onSave={async (nextSettings) => {
+                await saveSettings(nextSettings);
+                setSettings(nextSettings);
+                showToast('Material catalogue saved');
+              }}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* ── ACCORDION 5: Appearance & Sound ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
           <div
@@ -2370,56 +2335,6 @@ export default function Settings() {
                 </div>
               </div>
 
-              {/* Accent Color Palette 
-              <div style={{ padding: '12px 16px 14px', background: 'var(--bg-card)' }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-secondary)', marginBottom: 10 }}>
-                  ACCENT COLOR HIGHLIGHT
-                </div>
-                <div style={{ display: 'flex', gap: 14, justifyContent: 'space-around' }}>
-                  {ACCENT_COLOR_OPTIONS.map((swatch) => {
-                    const isSelected = activeAccent === swatch.id;
-                    return (
-                      <button
-                        key={swatch.id}
-                        type="button"
-                        onClick={() => handleAccentChange(swatch.id)}
-                        style={{
-                          border: 'none',
-                          background: 'none',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          alignItems: 'center',
-                          gap: 6,
-                          padding: 0,
-                        }}
-                      >
-                        <div
-                          style={{
-                            width: 38,
-                            height: 38,
-                            borderRadius: '50%',
-                            background: swatch.color,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            color: '#FFFFFF',
-                            boxShadow: isSelected ? `0 0 0 3px var(--bg-card), 0 0 0 5px ${swatch.color}` : 'none',
-                          }}
-                        >
-                          {isSelected && <Check size={18} strokeWidth={3} />}
-                        </div>
-                        <span style={{ fontSize: 11, fontWeight: isSelected ? 700 : 500, color: isSelected ? 'var(--label-primary)' : 'var(--label-tertiary)' }}>
-                          {swatch.name}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="ios-separator with-glyph" style={{ marginTop: 12 }} />
-              </div>
-              */}
-
               {/* Sound & Haptics */}
               <div className="ios-cell" style={{ cursor: 'pointer' }} onClick={() => handleSoundToggle(!soundEnabled)}>
                 <div className="ios-glyph-badge" style={{ background: soundEnabled ? 'var(--ios-green)' : 'var(--fill-secondary)' }}>
@@ -2482,7 +2397,7 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* ── ACCORDION 5: Currency, Region & Defaults (FUNCTIONAL DUMMY FIELDS) ── */}
+      {/* ── ACCORDION 6: Currency, Region & Defaults (FUNCTIONAL DUMMY FIELDS) ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
           <div
@@ -2680,7 +2595,7 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* ── ACCORDION 6: Data & Storage Management ── */}
+      {/* ── ACCORDION 7: Data & Storage Management ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
           <div
@@ -2920,27 +2835,29 @@ export default function Settings() {
                 <div className="ios-separator with-glyph" />
               </div>
 
-              {/* Seed Demo / Test Data */}
-              <div
-                className="ios-cell"
-                onClick={() => {
-                  playPopSound();
-                  setShowSeedConfirm(true);
-                }}
-                style={{ cursor: 'pointer' }}
-              >
-                <div className="ios-glyph-badge" style={{ background: '#8B5CF6' }}>
-                  <Database size={18} color="#FFFFFF" />
+              {/* Seed Demo / Test Data - Development Only */}
+              {import.meta.env.DEV && (
+                <div
+                  className="ios-cell"
+                  onClick={() => {
+                    playPopSound();
+                    setShowSeedConfirm(true);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <div className="ios-glyph-badge" style={{ background: '#8B5CF6' }}>
+                    <Database size={18} color="#FFFFFF" />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <span className="ios-cell-label" style={{ color: 'var(--label-primary)' }}>
+                      Populate Demo / Test Data
+                    </span>
+                    <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Seed buyers, suppliers, inventory & dispatches (devSeed.ts)</div>
+                  </div>
+                  <ChevronRight size={18} color="var(--label-tertiary)" />
+                  <div className="ios-separator with-glyph" />
                 </div>
-                <div style={{ flex: 1 }}>
-                  <span className="ios-cell-label" style={{ color: 'var(--label-primary)' }}>
-                    Populate Demo / Test Data
-                  </span>
-                  <div style={{ fontSize: 12, color: 'var(--label-secondary)' }}>Seed buyers, suppliers, inventory & dispatches (devSeed.ts)</div>
-                </div>
-                <ChevronRight size={18} color="var(--label-tertiary)" />
-                <div className="ios-separator with-glyph" />
-              </div>
+              )}
 
               {/* Erase All Data */}
               <div
@@ -2969,84 +2886,6 @@ export default function Settings() {
           )}
         </div>
       </div>
-
-      {/* ── ACCORDION 7: About & Diagnostics ── 
-      <div className="ios-group" style={{ marginBottom: 14 }}>
-        <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
-          <div
-            className="ios-cell"
-            onClick={() => toggleSection('about')}
-            style={{
-              cursor: 'pointer',
-              userSelect: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              padding: '13px 16px',
-              minHeight: 54,
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-              <div className="ios-glyph-badge" style={{ background: '#636366', flexShrink: 0 }}>
-                <Info size={18} color="#FFFFFF" />
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--label-primary)', letterSpacing: '-0.2px' }}>
-                  About & Diagnostics
-                </span>
-                {!openSections['about'] && (
-                  <span style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }}>
-                    Version 2.5.0 · Apple iOS 18 Design Framework
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-              <ChevronDown
-                style={{
-                  width: 18,
-                  height: 18,
-                  color: 'var(--label-tertiary)',
-                  transform: openSections['about'] ? 'rotate(180deg)' : 'rotate(0deg)',
-                  transition: 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
-                }}
-                strokeWidth={2.4}
-              />
-            </div>
-            {openSections['about'] && <div className="ios-separator with-glyph" />}
-          </div>
-
-          {openSections['about'] && (
-            <div>
-              <div className="ios-cell" style={{ cursor: 'default' }}>
-                <span className="ios-cell-label">Application</span>
-                <span style={{ fontSize: 15, color: 'var(--label-secondary)' }}>Factory Ledger iOS</span>
-                <div className="ios-separator" />
-              </div>
-
-              <div className="ios-cell" style={{ cursor: 'default' }}>
-                <span className="ios-cell-label">Software Version</span>
-                <span style={{ fontSize: 15, color: 'var(--label-secondary)' }}>1.0.0 (Build 2026.10)</span>
-                <div className="ios-separator" />
-              </div>
-
-              <div className="ios-cell" style={{ cursor: 'default' }}>
-                <span className="ios-cell-label">Architecture</span>
-                <span style={{ fontSize: 15, color: 'var(--label-secondary)' }}>IndexedDB Offline + Firebase</span>
-                <div className="ios-separator" />
-              </div>
-
-              <div className="ios-cell" style={{ cursor: 'default' }}>
-                <span className="ios-cell-label">Security Protocol</span>
-                <span style={{ fontSize: 15, color: 'var(--label-secondary)' }}>
-                  {appLockActive ? 'Biometric + PBKDF2 PIN (100k)' : 'Unprotected'}
-                </span>
-              </div>
-            </div>
-          )}
-        </div>
-      </div> */}
 
       {/* ── Confirmation Modals ── */}
       <IOSConfirmModal
@@ -3092,28 +2931,30 @@ export default function Settings() {
         onCancel={() => setShowClearConfirm(false)}
       />
 
-      <IOSConfirmModal
-        isOpen={showSeedConfirm}
-        title="Populate Demo / Test Data?"
-        message="This will overwrite local database records with realistic sample buyers, suppliers, inventory lots, dispatches, and payments (devSeed.ts)."
-        confirmText={isSeeding ? 'Populating...' : 'Populate Data'}
-        cancelText="Cancel"
-        destructive={false}
-        countdownSeconds={0}
-        icon="none"
-        onConfirm={async () => {
-          setIsSeeding(true);
-          try {
-            if (typeof (window as any).seedTestData === 'function') {
-              await (window as any).seedTestData({ reload: true, clearBeforeSeed: true });
+      {import.meta.env.DEV && (
+        <IOSConfirmModal
+          isOpen={showSeedConfirm}
+          title="Populate Demo / Test Data?"
+          message="This will overwrite local database records with realistic sample buyers, suppliers, inventory lots, dispatches, and payments (devSeed.ts)."
+          confirmText={isSeeding ? 'Populating...' : 'Populate Data'}
+          cancelText="Cancel"
+          destructive={false}
+          countdownSeconds={0}
+          icon="none"
+          onConfirm={async () => {
+            setIsSeeding(true);
+            try {
+              if (typeof (window as any).seedTestData === 'function') {
+                await (window as any).seedTestData({ reload: true, clearBeforeSeed: true });
+              }
+            } finally {
+              setIsSeeding(false);
+              setShowSeedConfirm(false);
             }
-          } finally {
-            setIsSeeding(false);
-            setShowSeedConfirm(false);
-          }
-        }}
-        onCancel={() => setShowSeedConfirm(false)}
-      />
+          }}
+          onCancel={() => setShowSeedConfirm(false)}
+        />
+      )}
 
       <IOSConfirmModal
         isOpen={showClearConflictArchiveConfirm}

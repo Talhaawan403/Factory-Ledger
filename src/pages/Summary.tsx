@@ -17,9 +17,12 @@ import {
     ArrowDownRight,
     ReceiptText,
     Plus,
-    Store
+    Store,
+    HardDriveDownload,
+    X
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { auth } from '../lib/firebase';
 import DealEstimatorModal from '../components/DealEstimatorModal';
 import DispatchPreviewModal from '../components/DispatchPreviewModal';
 import ExpensePreviewModal from '../components/ExpensePreviewModal';
@@ -66,6 +69,16 @@ export default function Summary() {
             monthEnd,
             thirtyDaysAgo: now.getTime() - 30 * 86400000
         };
+    });
+
+    const [dismissBackupNag, setDismissBackupNag] = useState(() => {
+        try {
+            const dismissedAt = localStorage.getItem('fl_backup_nag_dismissed_at');
+            if (!dismissedAt) return false;
+            return Date.now() - parseInt(dismissedAt, 10) < 3 * 24 * 60 * 60 * 1000;
+        } catch {
+            return false;
+        }
     });
 
     const loadData = useCallback(async () => {
@@ -190,6 +203,13 @@ export default function Summary() {
     const totalTons = ledgerTotals.receivedTons;
     const profitMargin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
     const formattedProfit = formatCurrency(totalProfit, settings, { showSign: true });
+
+    // Local-only backup reminder logic (safety net against device loss when cloud sync is off)
+    const isLocalOnly = !auth?.currentUser;
+    const totalLocalRecords = dispatches.length + payments.length + (expenses?.length || 0);
+    const lastBackupTime = typeof localStorage !== 'undefined' ? localStorage.getItem('fl_last_backup_date') : null;
+    const isBackupOverdue = !lastBackupTime || (Date.now() - new Date(lastBackupTime).getTime() > 7 * 24 * 60 * 60 * 1000);
+    const showBackupNag = isLocalOnly && totalLocalRecords >= 5 && isBackupOverdue && !dismissBackupNag;
 
     // Filter and sort general expenses for the active period
     const periodExpenses = expenses.filter((e) => !e.deleted && isDateInBooksPeriod(e.date, booksPeriod));
@@ -423,6 +443,92 @@ export default function Summary() {
                     </div>
                 </div>
             </div>
+
+            {/* Local Backup Safety Nag (Offline safety net against device loss) */}
+            {showBackupNag && (
+                <div style={{ padding: '0 16px', marginBottom: 14 }}>
+                    <div
+                        style={{
+                            background: 'var(--bg-card)',
+                            borderRadius: 14,
+                            border: '0.5px solid rgba(245, 158, 11, 0.35)',
+                            padding: '12px 14px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 12,
+                            boxShadow: 'var(--shadow-card)',
+                        }}
+                    >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+                            <div
+                                style={{
+                                    width: 36,
+                                    height: 36,
+                                    borderRadius: 10,
+                                    background: 'rgba(245, 158, 11, 0.15)',
+                                    color: '#F59E0B',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    flexShrink: 0,
+                                }}
+                            >
+                                <HardDriveDownload size={18} />
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--label-primary)' }}>
+                                    Local Backup Recommended
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--label-secondary)', marginTop: 2, lineHeight: 1.3 }}>
+                                    {totalLocalRecords} records stored offline with no cloud sync. Export a JSON backup to protect your ledger.
+                                </div>
+                            </div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                            <button
+                                onClick={() => {
+                                    playPopSound();
+                                    navigate('/settings');
+                                }}
+                                style={{
+                                    padding: '6px 12px',
+                                    borderRadius: 8,
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    background: '#F59E0B',
+                                    color: '#FFFFFF',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                }}
+                            >
+                                Backup
+                            </button>
+                            <button
+                                onClick={() => {
+                                    playPopSound();
+                                    try {
+                                        localStorage.setItem('fl_backup_nag_dismissed_at', Date.now().toString());
+                                    } catch {}
+                                    setDismissBackupNag(true);
+                                }}
+                                style={{
+                                    background: 'transparent',
+                                    border: 'none',
+                                    color: 'var(--label-tertiary)',
+                                    cursor: 'pointer',
+                                    padding: 4,
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                }}
+                                title="Dismiss for 3 days"
+                            >
+                                <X size={16} />
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* In-Transit Dispatches Banner (Issue 19) */}
             {pendingDispatches.length > 0 && (

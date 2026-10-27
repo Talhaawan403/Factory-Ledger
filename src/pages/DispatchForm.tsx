@@ -340,8 +340,19 @@ export default function DispatchForm() {
     if (!isInTransit && cleanNumber(dispatch.labReceivedWeight) <= 0) {
       errors.labReceivedWeight = 'Enter factory received weight or toggle In-Transit';
     }
-    if (isCoalMaterial && !isInTransit && cleanNumber(dispatch.labActualGcv) <= 0) {
+    if (dispatch.gcvAdjustment === 'prorata') {
+      if (cleanNumber(dispatch.targetGcv) <= 0) {
+        errors.targetGcv = 'Enter target GCV (> 0) for pro-rata adjustment';
+      }
+      if (!isInTransit && cleanNumber(dispatch.labActualGcv) <= 0) {
+        errors.labActualGcv = 'Enter factory lab GCV (> 0) before settling a pro-rata dispatch';
+      }
+    } else if (isCoalMaterial && !isInTransit && cleanNumber(dispatch.labActualGcv) <= 0) {
       errors.labActualGcv = 'Enter the final factory lab GCV before settlement';
+    }
+
+    if (settlement.payableRate <= 0 && (cleanNumber(dispatch.baseRate) > 0 || cleanNumber(dispatch.ratePerQualityUnit) > 0)) {
+      errors.baseRate = `Calculated payable rate is zero or negative (${settlement.payableRate.toFixed(2)}). Please adjust base rate or deductions.`;
     }
     setValidationErrors(errors);
     return Object.keys(errors).length === 0;
