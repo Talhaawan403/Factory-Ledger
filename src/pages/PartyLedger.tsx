@@ -21,15 +21,15 @@ import {
   getMines,
   cleanNumber
 } from '../lib/db';
-import type { Party, Dispatch, Payment, PurchaseOrder, AppSettings, InventoryLot, Mine } from '../types';
+import type { Party, Dispatch, Payment, PurchaseOrder, AppSettings, InventoryLot, Mine, MaterialDefinition, MaterialPricingModel } from '../types';
 import { getTodayDateString, toLocalDateString, formatDisplayDate } from '../utils/dateUtils';
-import { calculateSettlement, calculatePartyBalance, isDispatchPending, calculateLedgerTotals } from '../utils/calculations';
+import { calculateSettlement, calculatePartyBalance, isDispatchPending, calculateLedgerTotals, calculateLotStock } from '../utils/calculations';
 import { getCurrencySymbol, getCurrencyCode, formatAmountNumber, formatCompactFinancial } from '../utils/currency';
 import { useLedgerListener } from '../hooks/useLedgerListener';
 import { Capacitor } from '@capacitor/core';
 import { Share } from '@capacitor/share';
 import { v4 as uuidv4 } from 'uuid';
-import { getMaterialForDispatch } from '../utils/materials';
+import { getMaterialForDispatch, COAL_ITEM_ID, getMaterialItems, getMaterialById, getMaterialBadgeTheme } from '../utils/materials';
 import {
   ChevronLeft,
   Share2,
@@ -47,8 +47,12 @@ import {
   ArrowDown,
   ArrowUp,
   Package,
-  TrendingUp
+  TrendingUp,
+  Layers,
+  Lock,
+  Link2
 } from 'lucide-react';
+import IOSSelect from '../components/IOSSelect';
 import PartyModalSheet from '../components/PartyModalSheet';
 import FloatingField from '../components/FloatingField';
 import { triggerConfetti, playSuccessSound, playPopSound, playCashChime } from '../utils/delight';
@@ -135,6 +139,13 @@ export default function PartyLedger() {
   const [poForm, setPoForm] = useState<{
     id?: string;
     poNumber: string;
+    itemId: string;
+    itemName: string;
+    pricingModel: MaterialPricingModel;
+    qualityLabel?: string;
+    qualityUnit?: string;
+    ratePerQualityUnit?: string;
+    purityPercent?: string;
     targetGcv: string;
     baseRate: string;
     commissionPerTon: string;
@@ -145,6 +156,13 @@ export default function PartyLedger() {
     gcvAdjustmentRounding: 'rupee' | 'paisa';
   }>({
     poNumber: '',
+    itemId: COAL_ITEM_ID,
+    itemName: 'Coal',
+    pricingModel: 'gcv',
+    qualityLabel: 'GCV',
+    qualityUnit: 'kcal/kg',
+    ratePerQualityUnit: '',
+    purityPercent: '30',
     targetGcv: '6000',
     baseRate: '',
     commissionPerTon: '0',
@@ -163,6 +181,22 @@ export default function PartyLedger() {
   const [settings, setSettings] = useState<AppSettings | undefined>(undefined);
   const curSym = getCurrencySymbol(settings?.currency);
   const curCode = getCurrencyCode(settings?.currency);
+  const allActiveMaterials = useMemo<MaterialDefinition[]>(() => {
+    return getMaterialItems(settings, true);
+  }, [settings]);
+
+  // Safeguards for Purchase Orders in use
+  const poLinkedDispatches = useMemo(() => {
+    if (!poForm.id) return [];
+    return dispatches.filter((d) => !d.deleted && d.poId === poForm.id);
+  }, [poForm.id, dispatches]);
+
+  const isPOInUse = poLinkedDispatches.length > 0;
+
+  const poDispatchedTons = useMemo(() => {
+    if (!isPOInUse) return 0;
+    return calculateLedgerTotals(poLinkedDispatches, settings).receivedTons;
+  }, [isPOInUse, poLinkedDispatches, settings]);
   const [isSharingPayment, setIsSharingPayment] = useState(false);
   const paymentReceiptRef = useRef<HTMLDivElement>(null);
 
@@ -291,13 +325,54 @@ export default function PartyLedger() {
     label?: string;
   } | null>(null);
 
+  const [poTonnageWarning, setPoTonnageWarning] = useState<{
+    enteredTons: number;
+    dispatchedTons: number;
+    dispatchesCount: number;
+  } | null>(null);
+
+  const [linkedPaymentNotice, setLinkedPaymentNotice] = useState<{
+    isOpen: boolean;
+    targetDispatch?: Dispatch;
+    targetLot?: InventoryLot;
+    action: 'edit' | 'delete';
+  } | null>(null);
+
   const handleDeletePayment = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     playPopSound();
+    const pay = payments.find((p) => p.id === id);
+    if (pay) {
+      const linkedDisp = dispatches.find(
+        (d) => !d.deleted && (d.linkedPaymentId === pay.id || (pay.linkedDispatchId && d.id === pay.linkedDispatchId))
+      );
+      const linkedL = lots.find(
+        (l) => !l.deleted && (l.linkedPaymentId === pay.id || (pay.linkedLotId && l.id === pay.linkedLotId))
+      );
+      if (linkedDisp) {
+        setLinkedPaymentNotice({
+          isOpen: true,
+          targetDispatch: linkedDisp,
+          action: 'delete',
+        });
+        return;
+      }
+      if (linkedL) {
+        setLinkedPaymentNotice({
+          isOpen: true,
+          targetLot: linkedL,
+          action: 'delete',
+        });
+        return;
+      }
+    }
     setDeleteTarget({ type: 'payment', id });
   };
 
-  const handleSavePO = async (e?: React.FormEvent) => {
+  const handleSavePO = async (
+    e?: React.FormEvent,
+    overrides?: { totalTons?: number; isActive?: boolean }
+  ) => {
     if (e) e.preventDefault();
     if (!partyId || !poForm.poNumber.trim()) {
       playPopSound();
@@ -305,18 +380,60 @@ export default function PartyLedger() {
       return;
     }
 
+    const effectiveTotalTons = overrides?.totalTons !== undefined
+      ? overrides.totalTons
+      : (parseFloat(poForm.totalTons) || undefined);
+
+    if (
+      overrides?.totalTons === undefined &&
+      isPOInUse &&
+      effectiveTotalTons !== undefined &&
+      effectiveTotalTons < poDispatchedTons
+    ) {
+      playPopSound();
+      setPoTonnageWarning({
+        enteredTons: effectiveTotalTons,
+        dispatchedTons: poDispatchedTons,
+        dispatchesCount: poLinkedDispatches.length,
+      });
+      return;
+    }
+
+    const isPurity = poForm.pricingModel === 'purity';
+    const isGcv = poForm.pricingModel === 'gcv';
+
+    const existingPo = poForm.id ? pos.find((p) => p.id === poForm.id) : undefined;
+
     const newPO: PurchaseOrder = {
       id: poForm.id || uuidv4(),
       partyId,
-      poNumber: poForm.poNumber.trim().toUpperCase(),
-      targetGcv: parseFloat(poForm.targetGcv) || 0,
-      baseRate: parseFloat(poForm.baseRate) || 0,
-      commissionPerTon: parseFloat(poForm.commissionPerTon) || 0,
-      totalTons: parseFloat(poForm.totalTons) || undefined,
+      poNumber: isPOInUse && existingPo ? existingPo.poNumber : poForm.poNumber.trim().toUpperCase(),
+      itemId: isPOInUse && existingPo ? (existingPo.itemId || COAL_ITEM_ID) : (poForm.itemId || COAL_ITEM_ID),
+      itemName: isPOInUse && existingPo ? (existingPo.itemName || 'Coal') : (poForm.itemName || 'Coal'),
+      pricingModel: isPOInUse && existingPo ? (existingPo.pricingModel || 'gcv') : poForm.pricingModel,
+      qualityLabel: isPOInUse && existingPo ? existingPo.qualityLabel : poForm.qualityLabel,
+      qualityUnit: isPOInUse && existingPo ? existingPo.qualityUnit : poForm.qualityUnit,
+      ratePerQualityUnit: isPOInUse && existingPo
+        ? existingPo.ratePerQualityUnit
+        : (isPurity && poForm.ratePerQualityUnit ? parseFloat(poForm.ratePerQualityUnit) || 0 : undefined),
+      targetGcv: isPOInUse && existingPo
+        ? (existingPo.targetGcv || 0)
+        : (isGcv ? (parseFloat(poForm.targetGcv) || 0) : 0),
+      baseRate: isPOInUse && existingPo
+        ? (existingPo.baseRate || 0)
+        : (parseFloat(poForm.baseRate) || 0),
+      commissionPerTon: isPOInUse && existingPo
+        ? (existingPo.commissionPerTon || 0)
+        : (parseFloat(poForm.commissionPerTon) || 0),
+      totalTons: effectiveTotalTons,
       notes: poForm.notes.trim() || undefined,
-      isActive: poForm.isActive,
-      gcvAdjustment: poForm.gcvAdjustment,
-      gcvAdjustmentRounding: poForm.gcvAdjustmentRounding,
+      isActive: overrides?.isActive !== undefined ? overrides.isActive : poForm.isActive,
+      gcvAdjustment: isPOInUse && existingPo
+        ? existingPo.gcvAdjustment
+        : (isGcv ? poForm.gcvAdjustment : undefined),
+      gcvAdjustmentRounding: isPOInUse && existingPo
+        ? existingPo.gcvAdjustmentRounding
+        : (isGcv ? poForm.gcvAdjustmentRounding : undefined),
       createdAt: poForm.id ? (pos.find(p => p.id === poForm.id)?.createdAt || Date.now()) : Date.now()
     };
 
@@ -325,12 +442,23 @@ export default function PartyLedger() {
     triggerConfetti();
     setIsAddingPO(false);
     setPreviewPO(null);
+    setPoTonnageWarning(null);
     refreshLedger();
-    showToast(poForm.id ? 'Purchase Order updated!' : 'Purchase Order created!');
+    showToast(
+      overrides?.totalTons !== undefined
+        ? `PO capped at ${overrides.totalTons.toFixed(1)}t & fulfilled!`
+        : (poForm.id ? 'Purchase Order updated!' : 'Purchase Order created!')
+    );
   };
 
   const handleDeletePO = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
+    const linkedCount = dispatches.filter((d) => !d.deleted && d.poId === id).length;
+    if (linkedCount > 0) {
+      playPopSound();
+      showToast(`Cannot delete PO: ${linkedCount} ${linkedCount === 1 ? 'dispatch is' : 'dispatches are'} linked to this contract.`);
+      return;
+    }
     playPopSound();
     const targetPo = pos.find((p) => p.id === id);
     setDeleteTarget({ type: 'po', id, label: targetPo?.poNumber });
@@ -431,6 +559,13 @@ export default function PartyLedger() {
       refreshLedger();
       showToast('Payment entry deleted');
     } else if (deleteTarget.type === 'po') {
+      const linkedCount = dispatches.filter((d) => !d.deleted && d.poId === deleteTarget.id).length;
+      if (linkedCount > 0) {
+        playPopSound();
+        showToast(`Cannot delete PO: ${linkedCount} ${linkedCount === 1 ? 'dispatch is' : 'dispatches are'} linked to this contract.`);
+        setDeleteTarget(null);
+        return;
+      }
       await deletePurchaseOrder(deleteTarget.id);
       setPreviewPO(null);
       refreshLedger();
@@ -455,13 +590,41 @@ export default function PartyLedger() {
 
   const openNewPO = () => {
     const nextNum = (pos.length + 1).toString().padStart(3, '0');
-    const prefix = party?.name?.split(' ')[0]?.toUpperCase() || 'COAL';
+    const initialMatId = party?.materialIds?.[0] || COAL_ITEM_ID;
+    const initialMat = getMaterialById(initialMatId, settings);
+    const prefix = party?.name?.split(' ')[0]?.toUpperCase() || initialMat.name.toUpperCase();
+
+    let defaultBaseRate = '';
+    let defaultRatePerUnit = '';
+    let defaultTargetGcv = '';
+    let defaultCommission = '0';
+
+    if (initialMat.pricingModel === 'gcv') {
+      defaultTargetGcv = '6000';
+      defaultBaseRate = '38000';
+      defaultCommission = '500';
+    } else if (initialMat.pricingModel === 'purity') {
+      defaultRatePerUnit = String(initialMat.defaultRate || 116);
+      defaultBaseRate = String(Math.round(30 * (initialMat.defaultRate || 116)));
+      defaultCommission = '0';
+    } else {
+      defaultBaseRate = initialMat.defaultRate ? String(initialMat.defaultRate) : '';
+      defaultCommission = '0';
+    }
+
     setPoForm({
       id: undefined,
       poNumber: `PO-${prefix}-2026-${nextNum}`,
-      targetGcv: '6000',
-      baseRate: '38000',
-      commissionPerTon: '500',
+      itemId: initialMat.id,
+      itemName: initialMat.name,
+      pricingModel: initialMat.pricingModel,
+      qualityLabel: initialMat.qualityLabel || (initialMat.pricingModel === 'purity' ? 'Fe2O3' : 'GCV'),
+      qualityUnit: initialMat.qualityUnit || (initialMat.pricingModel === 'purity' ? '%' : 'kcal/kg'),
+      ratePerQualityUnit: defaultRatePerUnit,
+      purityPercent: '30',
+      targetGcv: defaultTargetGcv,
+      baseRate: defaultBaseRate,
+      commissionPerTon: defaultCommission,
       totalTons: '',
       notes: '',
       isActive: true,
@@ -473,12 +636,25 @@ export default function PartyLedger() {
 
   const openEditPO = (po: PurchaseOrder) => {
     setPreviewPO(null);
+    const matId = po.itemId || COAL_ITEM_ID;
+    const mat = getMaterialById(matId, settings);
+    const pModel = po.pricingModel || mat.pricingModel || 'gcv';
+
     setPoForm({
       id: po.id,
       poNumber: po.poNumber,
+      itemId: matId,
+      itemName: po.itemName || mat.name,
+      pricingModel: pModel,
+      qualityLabel: po.qualityLabel || mat.qualityLabel || (pModel === 'purity' ? 'Fe2O3' : 'GCV'),
+      qualityUnit: po.qualityUnit || mat.qualityUnit || (pModel === 'purity' ? '%' : 'kcal/kg'),
+      ratePerQualityUnit: po.ratePerQualityUnit !== undefined ? String(po.ratePerQualityUnit) : (pModel === 'purity' ? String(mat.defaultRate || 116) : ''),
+      purityPercent: pModel === 'purity' && po.baseRate && po.ratePerQualityUnit
+        ? String(Math.round((po.baseRate / po.ratePerQualityUnit) * 10) / 10)
+        : '30',
       targetGcv: (po.targetGcv || '').toString(),
       baseRate: (po.baseRate || '').toString(),
-      commissionPerTon: (po.commissionPerTon || '0').toString(),
+      commissionPerTon: (po.commissionPerTon !== undefined ? po.commissionPerTon : '0').toString(),
       totalTons: (po.totalTons || '').toString(),
       notes: po.notes || '',
       isActive: po.isActive ?? true,
@@ -488,7 +664,66 @@ export default function PartyLedger() {
     setIsAddingPO(true);
   };
 
+  const handlePOMaterialChange = (newMatId: string) => {
+    const mat = getMaterialById(newMatId, settings);
+    playPopSound();
+    setPoForm((prev) => {
+      let nextBaseRate = prev.baseRate;
+      let nextRatePerPoint = prev.ratePerQualityUnit || '';
+      let nextGcv = prev.targetGcv;
+
+      if (mat.pricingModel === 'purity') {
+        nextRatePerPoint = String(mat.defaultRate || 116);
+        const purityNum = parseFloat(prev.purityPercent || '30') || 30;
+        nextBaseRate = String(Math.round(purityNum * (mat.defaultRate || 116)));
+        nextGcv = '';
+      } else if (mat.pricingModel === 'gcv') {
+        nextGcv = prev.targetGcv || '6000';
+        nextBaseRate = prev.baseRate || '38000';
+      } else {
+        nextBaseRate = mat.defaultRate ? String(mat.defaultRate) : prev.baseRate;
+        nextGcv = '';
+        nextRatePerPoint = '';
+      }
+
+      return {
+        ...prev,
+        itemId: mat.id,
+        itemName: mat.name,
+        pricingModel: mat.pricingModel,
+        qualityLabel: mat.qualityLabel || (mat.pricingModel === 'purity' ? 'Fe2O3' : 'GCV'),
+        qualityUnit: mat.qualityUnit || (mat.pricingModel === 'purity' ? '%' : 'kcal/kg'),
+        ratePerQualityUnit: nextRatePerPoint,
+        targetGcv: nextGcv,
+        baseRate: nextBaseRate,
+      };
+    });
+  };
+
   const openPaymentEdit = (pay: Payment) => {
+    const linkedDisp = dispatches.find(
+      (d) => !d.deleted && (d.linkedPaymentId === pay.id || (pay.linkedDispatchId && d.id === pay.linkedDispatchId))
+    );
+    const linkedL = lots.find(
+      (l) => !l.deleted && (l.linkedPaymentId === pay.id || (pay.linkedLotId && l.id === pay.linkedLotId))
+    );
+    if (linkedDisp) {
+      setLinkedPaymentNotice({
+        isOpen: true,
+        targetDispatch: linkedDisp,
+        action: 'edit',
+      });
+      return;
+    }
+    if (linkedL) {
+      setLinkedPaymentNotice({
+        isOpen: true,
+        targetLot: linkedL,
+        action: 'edit',
+      });
+      return;
+    }
+
     setPreviewPayment(null);
     setPaymentForm({
       id: pay.id,
@@ -670,6 +905,8 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
               id: payData.id || uuidv4(),
               partyId: party.id,
               supplierId: party.id,
+              linkedLotId: payData.linkedLotId,
+              linkedDispatchId: payData.linkedDispatchId,
               date: payData.date || getTodayDateString(),
               amount: payData.amount || 0,
               type: payData.type || 'paid',
@@ -1269,6 +1506,9 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                 const lotRate = lot.purchaseRate || lot.ratePerTon || 0;
                 const lotFare = lot.freightCost || 0;
                 const lotTotal = lot.totalValue !== undefined ? lot.totalValue : Math.round(lotTons * lotRate + lotFare);
+                const lotStock = calculateLotStock(lot, allDispatches);
+                const isPartiallyUsed = lotStock.usedWeight > 0.001 && lotStock.remainingWeight > 0.001;
+                const isFullyAllocated = lotStock.usedWeight > 0.001 && lotStock.remainingWeight <= 0.001;
 
                 return (
                   <div key={`lot-${lot.id}`} className="ios-cell" onClick={() => setPreviewLot(lot)} style={{ cursor: 'pointer' }}>
@@ -1311,10 +1551,32 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                             </span>
                           )}
                         </span>
-                        <span style={{ fontSize: 11, fontWeight: 600, color: '#FF9500', background: 'rgba(255, 149, 0, 0.12)', padding: '1px 6px', borderRadius: 4, flexShrink: 0 }}>
-                          INWARD
+                        <span
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            color: isFullyAllocated ? '#AF52DE' : isPartiallyUsed ? '#FF9500' : 'var(--ios-green)',
+                            background: isFullyAllocated ? 'rgba(175, 82, 222, 0.12)' : isPartiallyUsed ? 'rgba(255, 149, 0, 0.12)' : 'rgba(52, 199, 89, 0.12)',
+                            padding: '1px 6px',
+                            borderRadius: 4,
+                            flexShrink: 0,
+                          }}
+                        >
+                          {isFullyAllocated ? 'FULLY USED' : isPartiallyUsed ? `PARTIAL (${lotStock.remainingWeight.toFixed(1)}t LEFT)` : 'INWARD'}
                         </span>
                       </div>
+                      {isPartiallyUsed && (
+                        <div style={{ marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#FF9500', fontWeight: 600 }}>
+                          <span>{lotStock.usedWeight.toFixed(1)}t dispatched</span>
+                          <span>•</span>
+                          <span>{lotStock.remainingWeight.toFixed(2)}t left in yard</span>
+                        </div>
+                      )}
+                      {isFullyAllocated && (
+                        <div style={{ marginTop: 4, fontSize: 11, color: 'var(--label-tertiary)' }}>
+                          All {lotTons.toFixed(1)}t dispatched · 0t remaining in yard
+                        </div>
+                      )}
                     </div>
                     <ChevronRight className="ios-chevron" strokeWidth={2.5} style={{ flexShrink: 0 }} />
                     <div className="ios-separator with-glyph" />
@@ -1340,6 +1602,22 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                           {material?.name && (
                             <span style={{ color: 'var(--ios-blue)', fontSize: 10.5, fontWeight: 650, background: 'rgba(0, 122, 255, 0.12)', padding: '1.5px 6px', borderRadius: 4, flexShrink: 0, whiteSpace: 'nowrap' }}>
                               {material.name}
+                            </span>
+                          )}
+                          {Boolean(d.paidOnSpot && d.paidOnSpot > 0) && (
+                            <span
+                              style={{
+                                color: 'var(--ios-green)',
+                                fontSize: 10,
+                                fontWeight: 700,
+                                background: 'rgba(52, 199, 89, 0.14)',
+                                padding: '1.5px 6px',
+                                borderRadius: 4,
+                                flexShrink: 0,
+                                whiteSpace: 'nowrap'
+                              }}
+                            >
+                              {(d.paidOnSpot || 0) >= settlement.totalRevenue ? 'PAID' : `PAID ${curSym} ${formatAmountNumber(d.paidOnSpot || 0, settings)}`}
                             </span>
                           )}
                         </div>
@@ -1417,6 +1695,27 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                           >
                             {pay.mode || 'CASH'}
                           </span>
+                          {Boolean(pay.linkedDispatchId || dispatches.some((d) => !d.deleted && d.linkedPaymentId === pay.id) || pay.linkedLotId || lots.some((l) => !l.deleted && l.linkedPaymentId === pay.id)) && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 700,
+                                padding: '1.5px 6px',
+                                borderRadius: 4,
+                                background: 'rgba(0, 122, 255, 0.12)',
+                                color: 'var(--ios-blue)',
+                                letterSpacing: '0.4px',
+                                flexShrink: 0,
+                                whiteSpace: 'nowrap',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 3,
+                              }}
+                            >
+                              <Link2 size={10} strokeWidth={2.4} />
+                              LINKED
+                            </span>
+                          )}
                         </div>
                         <span
                           style={{
@@ -1475,16 +1774,20 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                 const hasTarget = Boolean(po.totalTons && po.totalTons > 0);
                 const progressPct = hasTarget ? Math.min(100, Math.round((poTons / (po.totalTons || 1)) * 100)) : 0;
 
-                const specParts: string[] = [];
-                if (po.targetGcv && Number(po.targetGcv) > 0) {
+                const poMatId = po.itemId || COAL_ITEM_ID;
+                const poMatDef = getMaterialById(poMatId, settings);
+                const poPricing = po.pricingModel || poMatDef.pricingModel || 'gcv';
+
+                const specParts: string[] = [po.itemName || poMatDef.name];
+                if (poPricing === 'purity' && po.ratePerQualityUnit) {
+                  specParts.push(`${curSym} ${po.ratePerQualityUnit}/${po.qualityLabel || 'pt'}`);
+                } else if (poPricing === 'gcv' && po.targetGcv && Number(po.targetGcv) > 0) {
                   specParts.push(`GCV: ${po.targetGcv}`);
                 }
                 if (po.commissionPerTon && Number(po.commissionPerTon) > 0) {
                   specParts.push(`Comm: ${curSym} ${po.commissionPerTon}/t`);
                 }
-                const poSpecSummary = specParts.length > 0
-                  ? specParts.join(' · ')
-                  : (po.itemName || 'Standard Contract');
+                const poSpecSummary = specParts.join(' · ');
 
                 return (
                   <div key={`po-${po.id}`} className="ios-cell" onClick={() => setPreviewPO(po)} style={{ cursor: 'pointer' }}>
@@ -1906,6 +2209,17 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                     <span style={{ color: 'var(--label-secondary)' }}>Delivered Weight</span>
                     <span style={{ fontWeight: 600, color: 'var(--label-primary)' }}>{(previewLot.receivedWeight || previewLot.billedWeight || 0).toFixed(2)} tons</span>
                   </div>
+                  {(() => {
+                    const st = calculateLotStock(previewLot, allDispatches);
+                    return (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 8 }}>
+                        <span style={{ color: 'var(--label-secondary)' }}>Remaining in Yard</span>
+                        <span style={{ fontWeight: 700, color: st.remainingWeight > 0.001 ? '#FF9500' : 'var(--label-tertiary)' }}>
+                          {st.remainingWeight.toFixed(2)} tons ({st.usedWeight.toFixed(2)} tons dispatched)
+                        </span>
+                      </div>
+                    );
+                  })()}
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14, marginBottom: 8 }}>
                     <span style={{ color: 'var(--label-secondary)' }}>Purchase Rate</span>
                     <span style={{ fontWeight: 600, color: 'var(--label-primary)' }}>{curSym} {(previewLot.purchaseRate || previewLot.ratePerTon || 0).toLocaleString()} / ton</span>
@@ -1959,10 +2273,27 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                   type="button"
                   onClick={() => {
                     playPopSound();
+                    const st = calculateLotStock(previewLot, allDispatches);
+                    if (st.usedWeight > 0.001) {
+                      showToast(`Cannot delete: ${st.usedWeight.toFixed(2)} tons are used in active dispatches.`);
+                      return;
+                    }
                     setDeleteTarget({ type: 'lot', id: previewLot.id, label: previewLot.truckNumber || 'Stock Delivery' });
                   }}
                   className="ios-btn ios-btn-destructive"
-                  style={{ width: '100%', padding: 14, fontSize: 15, borderRadius: 14, background: 'var(--ios-red)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                  style={{
+                    width: '100%',
+                    padding: 14,
+                    fontSize: 15,
+                    borderRadius: 14,
+                    background: calculateLotStock(previewLot, allDispatches).usedWeight > 0.001 ? 'var(--fill-secondary)' : 'var(--ios-red)',
+                    color: calculateLotStock(previewLot, allDispatches).usedWeight > 0.001 ? 'var(--label-tertiary)' : 'white',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    cursor: calculateLotStock(previewLot, allDispatches).usedWeight > 0.001 ? 'not-allowed' : 'pointer',
+                  }}
                 >
                   <Trash2 size={16} /> Delete Delivery Record
                 </button>
@@ -2030,6 +2361,91 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
               <button onClick={() => openPaymentEdit(previewPayment)} className="ios-nav-action" style={{ fontWeight: 600 }}>Edit</button>
             </div>
             <div className="ios-sheet-body" style={{ padding: '20px 16px' }}>
+              {/* ── Linked Record Banner if on-the-spot payment ── */}
+              {(() => {
+                const linkedDisp = dispatches.find(
+                  (d) => !d.deleted && (d.linkedPaymentId === previewPayment.id || (previewPayment.linkedDispatchId && d.id === previewPayment.linkedDispatchId))
+                );
+                const linkedL = lots.find(
+                  (l) => !l.deleted && (l.linkedPaymentId === previewPayment.id || (previewPayment.linkedLotId && l.id === previewPayment.linkedLotId))
+                );
+                if (!linkedDisp && !linkedL) return null;
+                const isDisp = Boolean(linkedDisp);
+                const truckNum = linkedDisp ? (linkedDisp.truckNumber || 'Truck') : (linkedL?.truckNumber || 'Delivery');
+                const recDate = linkedDisp ? linkedDisp.date : linkedL?.date;
+
+                return (
+                  <div
+                    style={{
+                      background: 'rgba(0, 122, 255, 0.08)',
+                      border: '0.5px solid rgba(0, 122, 255, 0.25)',
+                      borderRadius: 16,
+                      padding: '12px 14px',
+                      marginBottom: 16,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                      <div
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: 10,
+                          background: 'var(--ios-blue)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#fff',
+                          flexShrink: 0,
+                          boxShadow: '0 2px 6px rgba(0, 122, 255, 0.25)',
+                        }}
+                      >
+                        <Link2 size={18} strokeWidth={2.4} />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--label-primary)' }}>
+                          Linked On-the-Spot Payment
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }} className="truncate">
+                          Attached to Truck: <strong style={{ color: 'var(--label-primary)' }}>{truckNum}</strong>
+                          {recDate ? ` • ${formatDisplayDate(recDate)}` : ''}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playPopSound();
+                        setPreviewPayment(null);
+                        if (isDisp && linkedDisp) {
+                          navigate(`/parties/${party.id}/dispatch/${linkedDisp.id}`);
+                        }
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        padding: '7px 12px',
+                        borderRadius: 999,
+                        background: 'var(--ios-blue)',
+                        color: '#fff',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        border: 'none',
+                        cursor: 'pointer',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <span>View {isDisp ? 'Truck' : 'Delivery'}</span>
+                      <ChevronRight size={14} strokeWidth={2.4} />
+                    </button>
+                  </div>
+                );
+              })()}
+
               <div style={{ textAlign: 'center', margin: '20px 0 30px' }}>
                 <div style={{ width: 64, height: 64, margin: '0 auto 16px', borderRadius: '50%', background: previewPayment.type === 'received' ? 'var(--ios-green)' : 'var(--ios-orange)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <Coins style={{ color: previewPayment.type === 'received' ? 'white' : 'white' }} size={32} />
@@ -2115,7 +2531,19 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                     <div style={{ padding: '0 16px', marginBottom: 18 }}>
                       <div style={{ background: 'var(--bg-card)', padding: 18, borderRadius: 18, border: '0.5px solid var(--separator)', boxShadow: 'var(--shadow-card)' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--label-secondary)', letterSpacing: 0.5, textTransform: 'uppercase' }}>Purchase Order</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--label-secondary)', letterSpacing: 0.5, textTransform: 'uppercase' }}>Purchase Order</span>
+                            {(() => {
+                              const pMatId = previewPO.itemId || COAL_ITEM_ID;
+                              const pTheme = getMaterialBadgeTheme(pMatId);
+                              const pMatDef = getMaterialById(pMatId, settings);
+                              return (
+                                <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 6, background: pTheme.bg, color: pTheme.color, border: `1px solid ${pTheme.dot}` }}>
+                                  {previewPO.itemName || pMatDef.name}
+                                </span>
+                              );
+                            })()}
+                          </div>
                           <span style={{ fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: previewPO.isActive ? 'var(--ios-green)' : 'var(--fill-primary)', color: previewPO.isActive ? 'white' : 'var(--label-secondary)' }}>
                             {previewPO.isActive ? 'ACTIVE CONTRACT' : 'FULFILLED / CLOSED'}
                           </span>
@@ -2144,42 +2572,69 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                     {/* Contract Pricing & Terms */}
                     <div className="ios-group">
                       <div className="ios-group-title">Contract Agreement Terms</div>
-                      <div className="ios-card-grouped" style={{ padding: '14px 16px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 10 }}>
-                          <span style={{ color: 'var(--label-secondary)' }}>Base Agreement Rate</span>
-                          <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }} className="tabular-nums">{curSym} {formatAmountNumber(previewPO.baseRate, settings)}/t</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 10 }}>
-                          <span style={{ color: 'var(--label-secondary)' }}>Target Calorific Value (GCV)</span>
-                          <span style={{ fontWeight: 600 }} className="tabular-nums">{previewPO.targetGcv} kcal/kg</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 10 }}>
-                          <span style={{ color: 'var(--label-secondary)' }}>Commission Deduction</span>
-                          <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {previewPO.commissionPerTon}/t</span>
-                        </div>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 10 }}>
-                          <span style={{ color: 'var(--label-secondary)' }}>GCV Pricing Rule</span>
-                          <span style={{ fontWeight: 600 }}>
-                            {previewPO.gcvAdjustment === 'prorata'
-                              ? `Auto Pro-Rata (${previewPO.gcvAdjustmentRounding === 'paisa' ? 'Paisa' : 'Rupee'})`
-                              : 'Manual Adjustments'}
-                          </span>
-                        </div>
-                        {previewPO.totalTons && (
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15 }}>
-                            <span style={{ color: 'var(--label-secondary)' }}>Total Contract Tonnage</span>
-                            <span style={{ fontWeight: 600 }} className="tabular-nums">{previewPO.totalTons} tons</span>
-                          </div>
-                        )}
-                        {previewPO.notes && (
-                          <>
-                            <div className="ios-separator" style={{ margin: '10px 0' }} />
-                            <div style={{ fontSize: 13, color: 'var(--label-secondary)' }}>
-                              <strong>Notes:</strong> {previewPO.notes}
+                      {(() => {
+                        const pMatId = previewPO.itemId || COAL_ITEM_ID;
+                        const pMatDef = getMaterialById(pMatId, settings);
+                        const pModel = previewPO.pricingModel || pMatDef.pricingModel || 'gcv';
+
+                        return (
+                          <div className="ios-card-grouped" style={{ padding: '14px 16px' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 10 }}>
+                              <span style={{ color: 'var(--label-secondary)' }}>Commodity</span>
+                              <span style={{ fontWeight: 700, color: 'var(--label-primary)' }}>{previewPO.itemName || pMatDef.name}</span>
                             </div>
-                          </>
-                        )}
-                      </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 10 }}>
+                              <span style={{ color: 'var(--label-secondary)' }}>Base Agreement Rate</span>
+                              <span style={{ fontWeight: 700, color: 'var(--ios-blue)' }} className="tabular-nums">{curSym} {formatAmountNumber(previewPO.baseRate, settings)}/t</span>
+                            </div>
+
+                            {pModel === 'purity' && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 10 }}>
+                                <span style={{ color: 'var(--label-secondary)' }}>Rate per {previewPO.qualityLabel || 'Purity'} Point</span>
+                                <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {previewPO.ratePerQualityUnit || 0} / pt</span>
+                              </div>
+                            )}
+
+                            {pModel === 'gcv' && (
+                              <>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 10 }}>
+                                  <span style={{ color: 'var(--label-secondary)' }}>Target Calorific Value (GCV)</span>
+                                  <span style={{ fontWeight: 600 }} className="tabular-nums">{previewPO.targetGcv} {previewPO.qualityUnit || 'kcal/kg'}</span>
+                                </div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: 10 }}>
+                                  <span style={{ color: 'var(--label-secondary)' }}>GCV Pricing Rule</span>
+                                  <span style={{ fontWeight: 600 }}>
+                                    {previewPO.gcvAdjustment === 'prorata'
+                                      ? `Auto Pro-Rata (${previewPO.gcvAdjustmentRounding === 'paisa' ? 'Paisa' : 'Rupee'})`
+                                      : 'Manual Adjustments'}
+                                  </span>
+                                </div>
+                              </>
+                            )}
+
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15, marginBottom: previewPO.totalTons ? 10 : 0 }}>
+                              <span style={{ color: 'var(--label-secondary)' }}>Commission Deduction</span>
+                              <span style={{ fontWeight: 600 }} className="tabular-nums">{curSym} {previewPO.commissionPerTon}/t</span>
+                            </div>
+
+                            {previewPO.totalTons && (
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 15 }}>
+                                <span style={{ color: 'var(--label-secondary)' }}>Total Contract Tonnage</span>
+                                <span style={{ fontWeight: 600 }} className="tabular-nums">{previewPO.totalTons} tons</span>
+                              </div>
+                            )}
+
+                            {previewPO.notes && (
+                              <>
+                                <div className="ios-separator" style={{ margin: '10px 0' }} />
+                                <div style={{ fontSize: 13, color: 'var(--label-secondary)' }}>
+                                  <strong>Notes:</strong> {previewPO.notes}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     {/* Fulfillment Performance */}
@@ -2236,13 +2691,33 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                         <Truck size={18} /> Record New Dispatch for this PO
                       </button>
 
-                      <button
-                        onClick={(e) => handleDeletePO(e, previewPO.id)}
-                        className="ios-btn ios-btn-destructive"
-                        style={{ width: '100%', padding: 14, fontSize: 15, borderRadius: 14, background: 'var(--ios-red)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-                      >
-                        <Trash2 size={16} /> Delete Purchase Order
-                      </button>
+                      {poDispatches.length > 0 ? (
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '12px 14px',
+                          borderRadius: 14,
+                          background: 'rgba(255, 149, 0, 0.08)',
+                          border: '0.5px solid rgba(255, 149, 0, 0.3)',
+                          color: 'var(--label-secondary)',
+                          fontSize: 13,
+                          lineHeight: '18px'
+                        }}>
+                          <Lock size={16} color="var(--ios-orange)" style={{ flexShrink: 0 }} />
+                          <span>
+                            Cannot delete: <strong>{poDispatches.length}</strong> {poDispatches.length === 1 ? 'dispatch is' : 'dispatches are'} linked ({fulfilledTons.toFixed(1)}t fulfilled). Reassign or remove dispatches first.
+                          </span>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={(e) => handleDeletePO(e, previewPO.id)}
+                          className="ios-btn ios-btn-destructive"
+                          style={{ width: '100%', padding: 14, fontSize: 15, borderRadius: 14, background: 'var(--ios-red)', color: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+                        >
+                          <Trash2 size={16} /> Delete Purchase Order
+                        </button>
+                      )}
                     </div>
                   </>
                 );
@@ -2265,16 +2740,65 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
             </div>
 
             <form onSubmit={handleSavePO} className="ios-sheet-body" style={{ padding: '16px 0 40px', overflowY: 'auto' }}>
+              {isPOInUse && (
+                <div style={{
+                  margin: '0 16px 14px',
+                  padding: '12px 14px',
+                  borderRadius: 14,
+                  background: 'rgba(255, 149, 0, 0.08)',
+                  border: '0.5px solid rgba(255, 149, 0, 0.35)',
+                  display: 'flex',
+                  gap: 10,
+                  alignItems: 'flex-start'
+                }}>
+                  <Lock size={18} color="var(--ios-orange)" style={{ flexShrink: 0, marginTop: 2 }} />
+                  <div style={{ fontSize: 13, lineHeight: '18px', color: 'var(--label-primary)' }}>
+                    <strong style={{ color: 'var(--ios-orange)' }}>Contract Terms Locked</strong>
+                    <div style={{ color: 'var(--label-secondary)', marginTop: 2 }}>
+                      This PO has <strong>{poLinkedDispatches.length}</strong> linked {poLinkedDispatches.length === 1 ? 'dispatch' : 'dispatches'} ({poDispatchedTons.toFixed(1)} tons fulfilled). Commodity, PO number, and pricing terms are locked to maintain audit accuracy.
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="ios-group" style={{ marginTop: 0 }}>
-                <div className="ios-group-title">PO Identifier & Status</div>
+                <div className="ios-group-title">Commodity & PO Identifier</div>
                 <div style={{ padding: '0 16px' }}>
+                  {/* Material / Commodity Selector */}
+                  <div style={{ marginBottom: 12 }}>
+                    <IOSSelect<string>
+                      label="Commodity / Material"
+                      value={poForm.itemId}
+                      onChange={handlePOMaterialChange}
+                      options={allActiveMaterials.map((mat) => {
+                        const mTheme = getMaterialBadgeTheme(mat.id);
+                        return {
+                          value: mat.id,
+                          label: mat.name,
+                          subtitle: mat.pricingModel === 'gcv'
+                            ? 'GCV Contract Pricing'
+                            : mat.pricingModel === 'purity'
+                              ? `${mat.qualityLabel || 'Purity'} % × Rate per Point`
+                              : 'Flat Rate per Ton',
+                          badge: mat.pricingModel === 'purity' ? 'Purity' : mat.pricingModel === 'gcv' ? 'GCV' : 'Flat',
+                          icon: <Layers size={16} color={mTheme.color} />,
+                        };
+                      })}
+                      floating
+                      disabled={isPOInUse}
+                      title="Select Commodity"
+                    />
+                  </div>
+
                   <FloatingField
                     label="PO Number *"
                     value={poForm.poNumber}
                     onChange={(val) => setPoForm({ ...poForm, poNumber: val.toUpperCase() })}
                     placeholder="e.g. PO-BW-2026-002"
                     required
-                    autoFocus
+                    autoFocus={!isPOInUse}
+                    disabled={isPOInUse}
+                    helperText={isPOInUse ? 'Locked: referenced by active dispatches' : undefined}
                   />
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: 'var(--bg-card)', borderRadius: 12, border: '0.5px solid var(--separator)', marginTop: 4 }}>
                     <span style={{ fontSize: 16, color: 'var(--label-primary)' }}>Contract Status</span>
@@ -2299,26 +2823,108 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
               </div>
 
               <div className="ios-group">
-                <div className="ios-group-title">Rate & Target Specifications</div>
+                <div className="ios-group-title">
+                  {poForm.pricingModel === 'purity'
+                    ? `${poForm.itemName} Quality & Purity Pricing`
+                    : poForm.pricingModel === 'gcv'
+                      ? 'Rate & Target Specifications'
+                      : `${poForm.itemName} Contract Terms`}
+                </div>
                 <div style={{ padding: '0 16px' }}>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                    <FloatingField
-                      label="Target GCV"
-                      type="number"
-                      suffix="kcal/kg"
-                      value={poForm.targetGcv}
-                      onChange={(val) => setPoForm({ ...poForm, targetGcv: val })}
-                      placeholder="6000"
-                    />
-                    <FloatingField
-                      label="Base Rate"
-                      type="number"
-                      suffix={`${curSym}/t`}
-                      value={poForm.baseRate}
-                      onChange={(val) => setPoForm({ ...poForm, baseRate: val })}
-                      placeholder="38500"
-                    />
-                  </div>
+                  {/* Case 1: GCV Model (Coal) */}
+                  {poForm.pricingModel === 'gcv' && (
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                      <FloatingField
+                        label="Target GCV"
+                        type="number"
+                        suffix={poForm.qualityUnit || "kcal/kg"}
+                        value={poForm.targetGcv}
+                        onChange={(val) => setPoForm({ ...poForm, targetGcv: val })}
+                        placeholder="6000"
+                        disabled={isPOInUse}
+                      />
+                      <FloatingField
+                        label="Base Rate"
+                        type="number"
+                        suffix={`${curSym}/t`}
+                        value={poForm.baseRate}
+                        onChange={(val) => setPoForm({ ...poForm, baseRate: val })}
+                        placeholder="38500"
+                        disabled={isPOInUse}
+                      />
+                    </div>
+                  )}
+
+                  {/* Case 2: Purity Model (Laterite) */}
+                  {poForm.pricingModel === 'purity' && (
+                    <>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                        <FloatingField
+                          label={`Target ${poForm.qualityLabel || 'Purity'}`}
+                          type="number"
+                          step="0.1"
+                          suffix={poForm.qualityUnit || '%'}
+                          value={poForm.purityPercent || ''}
+                          onChange={(val) => {
+                            const pNum = parseFloat(val) || 0;
+                            const rNum = parseFloat(poForm.ratePerQualityUnit || '0') || 0;
+                            setPoForm({
+                              ...poForm,
+                              purityPercent: val,
+                              baseRate: rNum && pNum ? String(Math.round(pNum * rNum)) : poForm.baseRate
+                            });
+                          }}
+                          placeholder="30"
+                          disabled={isPOInUse}
+                        />
+                        <FloatingField
+                          label={`Rate / ${poForm.qualityLabel || 'Purity'} pt`}
+                          type="number"
+                          step="0.01"
+                          suffix={`${curSym}/pt`}
+                          value={poForm.ratePerQualityUnit || ''}
+                          onChange={(val) => {
+                            const rNum = parseFloat(val) || 0;
+                            const pNum = parseFloat(poForm.purityPercent || '0') || 0;
+                            setPoForm({
+                              ...poForm,
+                              ratePerQualityUnit: val,
+                              baseRate: rNum && pNum ? String(Math.round(pNum * rNum)) : poForm.baseRate
+                            });
+                          }}
+                          placeholder="116"
+                          disabled={isPOInUse}
+                        />
+                      </div>
+                      <div style={{ marginTop: 2, marginBottom: 8 }}>
+                        <FloatingField
+                          label="Calculated Base Rate"
+                          type="number"
+                          suffix={`${curSym}/t`}
+                          value={poForm.baseRate}
+                          onChange={(val) => setPoForm({ ...poForm, baseRate: val })}
+                          placeholder="3480"
+                          disabled={isPOInUse}
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  {/* Case 3: Flat Model (Bauxite, Gypsum, Waste) */}
+                  {poForm.pricingModel === 'flat' && (
+                    <div style={{ marginBottom: 8 }}>
+                      <FloatingField
+                        label="Agreed Base Rate"
+                        type="number"
+                        suffix={`${curSym}/t`}
+                        value={poForm.baseRate}
+                        onChange={(val) => setPoForm({ ...poForm, baseRate: val })}
+                        placeholder="e.g. 5000"
+                        required
+                        disabled={isPOInUse}
+                      />
+                    </div>
+                  )}
 
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                     <FloatingField
@@ -2327,7 +2933,8 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                       suffix={`${curSym}/t`}
                       value={poForm.commissionPerTon}
                       onChange={(val) => setPoForm({ ...poForm, commissionPerTon: val })}
-                      placeholder="500"
+                      placeholder="0"
+                      disabled={isPOInUse}
                     />
                     <FloatingField
                       label="Target Tonnage"
@@ -2336,6 +2943,7 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                       value={poForm.totalTons}
                       onChange={(val) => setPoForm({ ...poForm, totalTons: val })}
                       placeholder="Optional"
+                      helperText={isPOInUse ? `Minimum: ${poDispatchedTons.toFixed(1)}t already dispatched` : undefined}
                     />
                   </div>
 
@@ -2343,106 +2951,125 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
                     label="Contract Remarks / Notes"
                     value={poForm.notes}
                     onChange={(val) => setPoForm({ ...poForm, notes: val })}
-                    placeholder="e.g. Max Sulphur 4.2%, Ash < 12%"
+                    placeholder={
+                      poForm.pricingModel === 'purity'
+                        ? 'e.g. Moisture < 10%, Fe2O3 min 28%'
+                        : poForm.pricingModel === 'gcv'
+                          ? 'e.g. Max Sulphur 4.2%, Ash < 12%'
+                          : 'e.g. Special delivery or quality terms'
+                    }
                   />
                 </div>
                 <div className="ios-group-footnote" style={{ padding: '6px 18px 0' }}>
-                  When dispatching trucks, selecting this PO will auto-populate target GCV, base rate, and commission.
+                  {poForm.pricingModel === 'purity'
+                    ? `When dispatching ${poForm.itemName}, selecting this PO will auto-populate the rate per point, base rate, and commission.`
+                    : poForm.pricingModel === 'gcv'
+                      ? 'When dispatching trucks, selecting this PO will auto-populate target GCV, base rate, and commission.'
+                      : `When dispatching ${poForm.itemName}, selecting this PO will auto-populate the agreed rate and commission.`}
                 </div>
               </div>
 
-              <div className="ios-group">
-                <div className="ios-group-title">GCV Pricing & Adjustment Rule</div>
-                <div style={{ padding: '0 16px' }}>
-                  <div style={{ display: 'flex', background: 'var(--fill-tertiary)', borderRadius: 10, padding: 3, marginBottom: 12 }}>
-                    <button
-                      type="button"
-                      onClick={() => setPoForm({ ...poForm, gcvAdjustment: 'manual' })}
-                      style={{
-                        flex: 1,
-                        padding: '8px 12px',
-                        borderRadius: 8,
-                        border: 'none',
-                        fontSize: 13,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        background: poForm.gcvAdjustment === 'manual' ? 'var(--bg-card)' : 'transparent',
-                        color: poForm.gcvAdjustment === 'manual' ? 'var(--label-primary)' : 'var(--label-secondary)',
-                        boxShadow: poForm.gcvAdjustment === 'manual' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                      }}
-                    >
-                      Manual Adjustments
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPoForm({ ...poForm, gcvAdjustment: 'prorata' })}
-                      style={{
-                        flex: 1,
-                        padding: '8px 12px',
-                        borderRadius: 8,
-                        border: 'none',
-                        fontSize: 13,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        background: poForm.gcvAdjustment === 'prorata' ? 'var(--ios-blue)' : 'transparent',
-                        color: poForm.gcvAdjustment === 'prorata' ? 'white' : 'var(--label-secondary)',
-                        boxShadow: poForm.gcvAdjustment === 'prorata' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                      }}
-                    >
-                      Auto Pro-Rata Formula
-                    </button>
-                  </div>
-
-                  {poForm.gcvAdjustment === 'prorata' && (
-                    <div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--label-secondary)', marginBottom: 6 }}>
-                        Rounding Precision:
-                      </div>
-                      <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
-                        <button
-                          type="button"
-                          onClick={() => setPoForm({ ...poForm, gcvAdjustmentRounding: 'rupee' })}
-                          style={{
-                            flex: 1,
-                            padding: '8px 12px',
-                            borderRadius: 8,
-                            border: '0.5px solid var(--separator)',
-                            fontSize: 12,
-                            fontWeight: 600,
-                            cursor: 'pointer',
-                            background: poForm.gcvAdjustmentRounding === 'rupee' ? 'var(--fill-primary)' : 'transparent',
-                            color: poForm.gcvAdjustmentRounding === 'rupee' ? 'var(--label-primary)' : 'var(--label-secondary)',
-                          }}
-                        >
-                          Whole Rupee (Rs)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setPoForm({ ...poForm, gcvAdjustmentRounding: 'paisa' })}
-                          style={{
-                            flex: 1,
-                            padding: '8px 12px',
-                            borderRadius: 8,
-                            border: '0.5px solid var(--separator)',
-                            fontSize: 12,
-                            fontWeight: 600,
-                            cursor: 'pointer',
-                            background: poForm.gcvAdjustmentRounding === 'paisa' ? 'var(--fill-primary)' : 'transparent',
-                            color: poForm.gcvAdjustmentRounding === 'paisa' ? 'var(--label-primary)' : 'var(--label-secondary)',
-                          }}
-                        >
-                          Paisa (0.01)
-                        </button>
-                      </div>
+              {/* Group 3: GCV Pricing & Adjustment Rule (Only for GCV / Coal) */}
+              {poForm.pricingModel === 'gcv' && (
+                <div className="ios-group">
+                  <div className="ios-group-title">GCV Pricing & Adjustment Rule</div>
+                  <div style={{ padding: '0 16px' }}>
+                    <div style={{ display: 'flex', background: 'var(--fill-tertiary)', borderRadius: 10, padding: 3, marginBottom: 12, opacity: isPOInUse ? 0.65 : 1 }}>
+                      <button
+                        type="button"
+                        disabled={isPOInUse}
+                        onClick={() => !isPOInUse && setPoForm({ ...poForm, gcvAdjustment: 'manual' })}
+                        style={{
+                          flex: 1,
+                          padding: '8px 12px',
+                          borderRadius: 8,
+                          border: 'none',
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: isPOInUse ? 'not-allowed' : 'pointer',
+                          background: poForm.gcvAdjustment === 'manual' ? 'var(--bg-card)' : 'transparent',
+                          color: poForm.gcvAdjustment === 'manual' ? 'var(--label-primary)' : 'var(--label-secondary)',
+                          boxShadow: poForm.gcvAdjustment === 'manual' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                        }}
+                      >
+                        Manual Adjustments
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isPOInUse}
+                        onClick={() => !isPOInUse && setPoForm({ ...poForm, gcvAdjustment: 'prorata' })}
+                        style={{
+                          flex: 1,
+                          padding: '8px 12px',
+                          borderRadius: 8,
+                          border: 'none',
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: isPOInUse ? 'not-allowed' : 'pointer',
+                          background: poForm.gcvAdjustment === 'prorata' ? 'var(--ios-blue)' : 'transparent',
+                          color: poForm.gcvAdjustment === 'prorata' ? 'white' : 'var(--label-secondary)',
+                          boxShadow: poForm.gcvAdjustment === 'prorata' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                        }}
+                      >
+                        Auto Pro-Rata Formula
+                      </button>
                     </div>
-                  )}
+
+                    {poForm.gcvAdjustment === 'prorata' && (
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--label-secondary)', marginBottom: 6 }}>
+                          Rounding Precision:
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, marginBottom: 8, opacity: isPOInUse ? 0.65 : 1 }}>
+                          <button
+                            type="button"
+                            disabled={isPOInUse}
+                            onClick={() => !isPOInUse && setPoForm({ ...poForm, gcvAdjustmentRounding: 'rupee' })}
+                            style={{
+                              flex: 1,
+                              padding: '8px 12px',
+                              borderRadius: 8,
+                              border: '0.5px solid var(--separator)',
+                              fontSize: 12,
+                              fontWeight: 600,
+                              cursor: isPOInUse ? 'not-allowed' : 'pointer',
+                              background: poForm.gcvAdjustmentRounding === 'rupee' ? 'var(--fill-primary)' : 'transparent',
+                              color: poForm.gcvAdjustmentRounding === 'rupee' ? 'var(--label-primary)' : 'var(--label-secondary)',
+                            }}
+                          >
+                            Whole Rupee (Rs)
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isPOInUse}
+                            onClick={() => !isPOInUse && setPoForm({ ...poForm, gcvAdjustmentRounding: 'paisa' })}
+                            style={{
+                              flex: 1,
+                              padding: '8px 12px',
+                              borderRadius: 8,
+                              border: '0.5px solid var(--separator)',
+                              fontSize: 12,
+                              fontWeight: 600,
+                              cursor: isPOInUse ? 'not-allowed' : 'pointer',
+                              background: poForm.gcvAdjustmentRounding === 'paisa' ? 'var(--fill-primary)' : 'transparent',
+                              color: poForm.gcvAdjustmentRounding === 'paisa' ? 'var(--label-primary)' : 'var(--label-secondary)',
+                            }}
+                          >
+                            Paisa (0.01)
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="ios-group-footnote" style={{ padding: '4px 18px 0' }}>
+                    {isPOInUse
+                      ? 'Adjustment rule is locked because dispatches have already been settled under this contract.'
+                      : poForm.gcvAdjustment === 'prorata'
+                        ? 'Dispatches referencing this PO will automatically calculate deduction/premium via: Base Rate × (1 − Lab GCV ÷ Target GCV).'
+                        : 'Dispatches referencing this PO will use manual adjustment inputs by default.'}
+                  </div>
                 </div>
-                <div className="ios-group-footnote" style={{ padding: '4px 18px 0' }}>
-                  {poForm.gcvAdjustment === 'prorata'
-                    ? 'Dispatches referencing this PO will automatically calculate deduction/premium via: Base Rate × (1 − Lab GCV ÷ Target GCV).'
-                    : 'Dispatches referencing this PO will use manual adjustment inputs by default.'}
-                </div>
-              </div>
+              )}
             </form>
           </div>
         </>
@@ -2516,6 +3143,60 @@ Current Ledger Balance: ${curSym} ${formatAmountNumber(Math.abs(outstandingBalan
         onConfirm={handleConfirmDelete}
         onCancel={() => setDeleteTarget(null)}
       />
+
+      {/* ── Target Tonnage Warning Modal (Option B) ── */}
+      {poTonnageWarning && (
+        <IOSConfirmModal
+          isOpen={Boolean(poTonnageWarning)}
+          icon="warning"
+          title="Target Below Dispatched Weight"
+          message={`You entered ${poTonnageWarning.enteredTons} tons, but ${poTonnageWarning.dispatchedTons.toFixed(1)} tons have already been dispatched across ${poTonnageWarning.dispatchesCount} ${poTonnageWarning.dispatchesCount === 1 ? 'dispatch' : 'dispatches'}.\n\nTarget tonnage cannot be lower than fulfilled weight. Would you like to cap this PO at exactly ${poTonnageWarning.dispatchedTons.toFixed(1)} tons to complete it early?`}
+          confirmText={`Cap at ${poTonnageWarning.dispatchedTons.toFixed(1)}t & Save`}
+          cancelText="Adjust Target"
+          destructive={false}
+          countdownSeconds={0}
+          onConfirm={() => handleSavePO(undefined, {
+            totalTons: poTonnageWarning.dispatchedTons,
+            isActive: false,
+          })}
+          onCancel={() => setPoTonnageWarning(null)}
+        />
+      )}
+
+      {/* ── Linked On-the-Spot Payment Interception Modal ── */}
+      {linkedPaymentNotice && (
+        <IOSConfirmModal
+          isOpen={Boolean(linkedPaymentNotice.isOpen)}
+          icon="link"
+          title="Linked Payment Record"
+          message={(() => {
+            const isDisp = Boolean(linkedPaymentNotice.targetDispatch);
+            const truckNum = linkedPaymentNotice.targetDispatch
+              ? (linkedPaymentNotice.targetDispatch.truckNumber || 'Dispatch')
+              : (linkedPaymentNotice.targetLot?.truckNumber || 'Delivery');
+            const targetFormName = isDisp ? 'Truck Dispatch' : 'Inward Delivery';
+
+            if (linkedPaymentNotice.action === 'delete') {
+              return `This payment is attached to Truck ${truckNum}. To remove or adjust this payment, please edit the payment field in the ${targetFormName} entry.\n\nSetting the payment amount to 0 or clearing the field will automatically remove this payment and keep receipts, invoices, and ledger balances in sync.`;
+            }
+            return `This payment was recorded on the spot for Truck ${truckNum}. To keep receipts, invoice totals, and ledger balances in sync, please update it from the ${targetFormName} form.\n\nSetting the payment amount to 0 or clearing the field will remove this payment, or you can adjust the amount as needed.`;
+          })()}
+          confirmText={linkedPaymentNotice.targetDispatch ? 'Open Truck Dispatch' : 'Open Inward Delivery'}
+          cancelText="Cancel"
+          destructive={false}
+          countdownSeconds={0}
+          onConfirm={() => {
+            const disp = linkedPaymentNotice.targetDispatch;
+            setLinkedPaymentNotice(null);
+            setPreviewPayment(null);
+            if (disp) {
+              playPopSound();
+              navigate(`/parties/${party.id}/dispatch/${disp.id}`);
+            }
+          }}
+          onCancel={() => setLinkedPaymentNotice(null)}
+        />
+      )}
 
       {/* ── Delete Party Confirmation Modal ── */}
       {partyToDelete && (() => {

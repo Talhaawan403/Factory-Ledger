@@ -125,7 +125,8 @@ ${adj.deduction > 0 ? `• ${isCoal ? 'GCV' : 'Manual'} Deduction${adj.isProrata
 ${dispatch.commissionPerTon ? `• Commission: - ${curSym} ${dispatch.commissionPerTon.toFixed(2)}/ton\n` : ''}----------------------------------------
 *PAYABLE RATE:* ${curSym} ${settlement.payableRate.toFixed(2)} / ton
 *TOTAL PAYABLE:* ${curSym} ${formatAmountNumber(settlement.totalRevenue, settings)}
-----------------------------------------
+${dispatch.paidOnSpot && dispatch.paidOnSpot > 0 ? `*PAID ON SPOT (${(dispatch.paidOnSpotMode || 'cash').toUpperCase()}):* - ${curSym} ${formatAmountNumber(dispatch.paidOnSpot, settings)}
+*REMAINING TRUCK DUE:* ${curSym} ${formatAmountNumber(Math.max(0, settlement.totalRevenue - dispatch.paidOnSpot), settings)}\n` : ''}----------------------------------------
 ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}E-Verified Dispatch Voucher`;
 
     try {
@@ -417,6 +418,35 @@ ${dispatch.notes ? `*Remarks:* ${dispatch.notes}\n\n` : ''}E-Verified Dispatch V
                     <span>Total Cost ({material.name} + Overheads)</span>
                     <span className="tabular-nums">{curSym} {formatAmountNumber(settlement.totalCost, settings)}</span>
                   </div>
+
+                  {Boolean(dispatch.paidOnSpot && dispatch.paidOnSpot > 0) && (() => {
+                    const paidSpot = dispatch.paidOnSpot || 0;
+                    const remainingDue = Math.max(0, settlement.totalRevenue - paidSpot);
+                    return (
+                      <div style={{
+                        background: 'var(--fill-tertiary)',
+                        padding: '10px 14px',
+                        borderRadius: 10,
+                        marginBottom: 12,
+                        fontSize: 13,
+                        border: '0.5px solid var(--separator)'
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <span style={{ color: 'var(--label-secondary)' }}>Paid on Spot ({(dispatch.paidOnSpotMode || 'cash').toUpperCase()})</span>
+                          <span style={{ fontWeight: 600, color: 'var(--ios-green)' }} className="tabular-nums">
+                            - {curSym} {formatAmountNumber(paidSpot, settings)}
+                          </span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ fontWeight: 600, color: 'var(--label-primary)' }}>Remaining Truck Due</span>
+                          <span style={{ fontWeight: 700, color: remainingDue > 0 ? 'var(--label-primary)' : 'var(--ios-green)' }} className="tabular-nums">
+                            {curSym} {formatAmountNumber(remainingDue, settings)}
+                            {remainingDue === 0 && ' (Settled)'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   <div style={{
                     padding: '12px 14px',

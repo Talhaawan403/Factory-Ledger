@@ -34,6 +34,7 @@ export default function App() {
             <Route path="inventory/:mineId" element={<MineLedger />} />
             <Route path="entries" element={<AllEntries />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="whatsnew" element={<Summary />} />
             <Route path="*" element={<NotFound />} />
           </Route>
         </Routes>

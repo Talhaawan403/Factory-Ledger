@@ -1,6 +1,8 @@
 import { useState, useMemo, useRef, useCallback } from 'react';
 import { Link } from 'react-router-dom';
+import { v4 as uuidv4 } from 'uuid';
 import type { Party, Payment, InventoryLot, AppSettings, Dispatch, Mine } from '../types';
+import { cleanNumber } from '../lib/db';
 import { calculatePartyBalance, roundPartyLedgerAmount, calculateSupplierStock, calculateLotStock } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber, formatCompactFinancial } from '../utils/currency';
 import { formatDisplayDate, getTodayDateString } from '../utils/dateUtils';
@@ -13,6 +15,7 @@ import IOSDatePicker from './IOSDatePicker';
 import NumericInput from './NumericInput';
 import PartyGlyph from './PartyGlyph';
 import ExportDateRangeSheet from './ExportDateRangeSheet';
+import IOSConfirmModal from './IOSConfirmModal';
 import { COAL_ITEM_ID, getMaterialById, getMaterialBadgeTheme } from '../utils/materials';
 import { Capacitor } from '@capacitor/core';
 import { Share } from '@capacitor/share';
@@ -33,6 +36,7 @@ import {
   Loader2,
   Image,
   Pickaxe,
+  Link2,
 } from 'lucide-react';
 
 interface SupplierLedgerViewProps {
@@ -78,6 +82,13 @@ export default function SupplierLedgerView({
   const [isShareSheetOpen, setIsShareSheetOpen] = useState(false);
   const [isPaymentShareSheetOpen, setIsPaymentShareSheetOpen] = useState(false);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  // Interception notice modal for on-the-spot linked payment
+  const [linkedPaymentNotice, setLinkedPaymentNotice] = useState<{
+    isOpen: boolean;
+    targetLot: InventoryLot;
+    action: 'edit' | 'delete';
+  } | null>(null);
 
   // Payment form state
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
@@ -200,10 +211,37 @@ export default function SupplierLedgerView({
   const handleSaveInward = async (lotData: Partial<InventoryLot>) => {
     const targetMatId = lotData.itemId || editingLot?.itemId || party.materialIds?.[0] || COAL_ITEM_ID;
     const targetMat = getMaterialById(targetMatId, settings);
+
+    const paidAmount = cleanNumber(lotData.paidOnSpot);
+    let finalLinkedPaymentId = editingLot?.linkedPaymentId || lotData.linkedPaymentId;
+    const finalLotId = editingLot?.id || lotData.id || uuidv4();
+
+    if (paidAmount > 0) {
+      finalLinkedPaymentId = finalLinkedPaymentId || uuidv4();
+      await onSavePayment({
+        id: finalLinkedPaymentId,
+        partyId: party.id,
+        supplierId: party.id,
+        linkedLotId: finalLotId,
+        date: lotData.date || getTodayDateString(),
+        amount: paidAmount,
+        type: 'paid',
+        mode: lotData.paidOnSpotMode || 'cash',
+        referenceNote: `Payment paid for Inward Truck ${lotData.truckNumber || ''}${lotData.paidOnSpotNote ? ` - ${lotData.paidOnSpotNote}` : ''}`,
+      });
+    } else if (finalLinkedPaymentId) {
+      await onDeletePayment(finalLinkedPaymentId);
+      finalLinkedPaymentId = undefined;
+    }
+
     const fullLot: Partial<InventoryLot> = {
       ...(editingLot || {}),
       ...lotData,
-      id: editingLot?.id || lotData.id || undefined,
+      id: finalLotId,
+      paidOnSpot: paidAmount > 0 ? paidAmount : undefined,
+      paidOnSpotMode: paidAmount > 0 ? (lotData.paidOnSpotMode || 'cash') : undefined,
+      paidOnSpotNote: paidAmount > 0 ? (lotData.paidOnSpotNote || undefined) : undefined,
+      linkedPaymentId: finalLinkedPaymentId,
       supplierId: party.id,
       supplier: party.name,
       boughtFrom: party.name,
@@ -230,6 +268,18 @@ export default function SupplierLedgerView({
   // Handle open payment edit modal
   const handleOpenPaymentEdit = (pay: Payment) => {
     playPopSound();
+    const linked = lots.find(
+      (l) => !l.deleted && (l.linkedPaymentId === pay.id || (pay.linkedLotId && l.id === pay.linkedLotId))
+    );
+    if (linked) {
+      setLinkedPaymentNotice({
+        isOpen: true,
+        targetLot: linked,
+        action: 'edit',
+      });
+      return;
+    }
+
     setEditingPaymentId(pay.id);
     setPaymentAmount(String(pay.amount));
     setPaymentType((pay.type as 'paid' | 'received') || 'paid');
@@ -919,6 +969,22 @@ Outstanding Balance: ${curSym} ${formatAmountNumber(Math.abs(balance.outstanding
                               {lot.itemName}
                             </span>
                           )}
+                          {Boolean(lot.paidOnSpot && lot.paidOnSpot > 0) && (
+                            <span
+                              style={{
+                                color: 'var(--ios-green)',
+                                fontSize: 10,
+                                fontWeight: 700,
+                                background: 'rgba(52, 199, 89, 0.14)',
+                                padding: '1.5px 6px',
+                                borderRadius: 4,
+                                flexShrink: 0,
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {(lot.paidOnSpot || 0) >= totalAmt ? 'PAID' : `PAID ${curSym} ${formatAmountNumber(lot.paidOnSpot || 0, settings)}`}
+                            </span>
+                          )}
                         </div>
                         <span style={{ fontSize: 16, fontWeight: 700, color: '#FF9500', flexShrink: 0, whiteSpace: 'nowrap' }} className="tabular-nums">
                           + {curSym} {formatAmountNumber(totalAmt, settings)}
@@ -1112,6 +1178,27 @@ Outstanding Balance: ${curSym} ${formatAmountNumber(Math.abs(balance.outstanding
                           >
                             {pay.mode || 'BANK'}
                           </span>
+                          {Boolean(pay.linkedLotId || lots.some((l) => !l.deleted && l.linkedPaymentId === pay.id)) && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 700,
+                                padding: '1.5px 6px',
+                                borderRadius: 4,
+                                background: 'rgba(0, 122, 255, 0.12)',
+                                color: 'var(--ios-blue)',
+                                letterSpacing: '0.4px',
+                                flexShrink: 0,
+                                whiteSpace: 'nowrap',
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 3,
+                              }}
+                            >
+                              <Link2 size={10} strokeWidth={2.4} />
+                              LINKED
+                            </span>
+                          )}
                         </div>
                         <span
                           style={{
@@ -1433,6 +1520,84 @@ Outstanding Balance: ${curSym} ${formatAmountNumber(Math.abs(balance.outstanding
                 </button>
               </div>
 
+              {/* ── Linked Record Banner if on-the-spot payment ── */}
+              {(() => {
+                const linkedL = lots.find(
+                  (l) => !l.deleted && (l.linkedPaymentId === previewPayment.id || (previewPayment.linkedLotId && l.id === previewPayment.linkedLotId))
+                );
+                if (!linkedL) return null;
+
+                return (
+                  <div
+                    style={{
+                      background: 'rgba(0, 122, 255, 0.08)',
+                      border: '0.5px solid rgba(0, 122, 255, 0.25)',
+                      borderRadius: 16,
+                      padding: '12px 14px',
+                      marginBottom: 16,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 12,
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                      <div
+                        style={{
+                          width: 36,
+                          height: 36,
+                          borderRadius: 10,
+                          background: 'var(--ios-blue)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: '#fff',
+                          flexShrink: 0,
+                          boxShadow: '0 2px 6px rgba(0, 122, 255, 0.25)',
+                        }}
+                      >
+                        <Link2 size={18} strokeWidth={2.4} />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--label-primary)' }}>
+                          Linked On-the-Spot Payment
+                        </div>
+                        <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }} className="truncate">
+                          Attached to Delivery: <strong style={{ color: 'var(--label-primary)' }}>{linkedL.truckNumber || 'Inward Lot'}</strong>
+                          {linkedL.date ? ` • ${formatDisplayDate(linkedL.date)}` : ''}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        playPopSound();
+                        const target = linkedL;
+                        setPreviewPayment(null);
+                        setEditingLot(target);
+                      }}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        padding: '7px 12px',
+                        borderRadius: 999,
+                        background: 'var(--ios-blue)',
+                        color: '#fff',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        border: 'none',
+                        cursor: 'pointer',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <span>View Delivery</span>
+                      <ChevronRight size={14} strokeWidth={2.4} />
+                    </button>
+                  </div>
+                );
+              })()}
+
               <div style={{ textAlign: 'center', margin: '14px 0 24px' }}>
                 <div style={{ width: 64, height: 64, margin: '0 auto 16px', borderRadius: '50%', background: previewPayment.type === 'paid' ? 'var(--ios-green)' : '#FF9500', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                   <CreditCard style={{ color: 'white' }} size={32} />
@@ -1475,6 +1640,17 @@ Outstanding Balance: ${curSym} ${formatAmountNumber(Math.abs(balance.outstanding
                 <button
                   type="button"
                   onClick={async () => {
+                    const linked = lots.find(
+                      (l) => !l.deleted && (l.linkedPaymentId === previewPayment.id || (previewPayment.linkedLotId && l.id === previewPayment.linkedLotId))
+                    );
+                    if (linked) {
+                      setLinkedPaymentNotice({
+                        isOpen: true,
+                        targetLot: linked,
+                        action: 'delete',
+                      });
+                      return;
+                    }
                     if (confirm('Are you sure you want to delete this payment record?')) {
                       await onDeletePayment(previewPayment.id);
                       setPreviewPayment(null);
@@ -1652,6 +1828,32 @@ Outstanding Balance: ${curSym} ${formatAmountNumber(Math.abs(balance.outstanding
             currentBalance={balance.outstandingBalance}
           />
         </div>
+      )}
+
+      {/* ── Linked On-the-Spot Payment Interception Modal ── */}
+      {linkedPaymentNotice && (
+        <IOSConfirmModal
+          isOpen={Boolean(linkedPaymentNotice.isOpen)}
+          icon="link"
+          title="Linked Payment Record"
+          message={
+            linkedPaymentNotice.action === 'delete'
+              ? `This payment is attached to Inward Delivery ${linkedPaymentNotice.targetLot?.truckNumber || 'Inward Lot'}. To remove or adjust this payment, please edit the payment field in the Inward Delivery entry.\n\nSetting the payment amount to 0 or clearing the field will automatically remove this payment and keep receipts, stock lots, and ledger balances in sync.`
+              : `This payment was recorded on the spot for Inward Delivery ${linkedPaymentNotice.targetLot?.truckNumber || 'Inward Lot'}. To keep receipts, stock lots, and ledger balances in sync, please update it from the Inward Delivery form.\n\nSetting the payment amount to 0 or clearing the field will remove this payment, or you can adjust the amount as needed.`
+          }
+          confirmText="Open Inward Delivery"
+          cancelText="Cancel"
+          destructive={false}
+          countdownSeconds={0}
+          onConfirm={() => {
+            const target = linkedPaymentNotice.targetLot;
+            setLinkedPaymentNotice(null);
+            setPreviewPayment(null);
+            playPopSound();
+            setEditingLot(target);
+          }}
+          onCancel={() => setLinkedPaymentNotice(null)}
+        />
       )}
     </div>
   );

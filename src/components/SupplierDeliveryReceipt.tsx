@@ -143,6 +143,41 @@ export const SupplierDeliveryReceipt = React.forwardRef<HTMLDivElement, Supplier
           />
         </ReceiptSection>
 
+        {/* ─── Payment & Balance Breakdown (if recorded) ─── */}
+        {Boolean(lot.paidOnSpot && lot.paidOnSpot > 0) && (() => {
+          const paidSpot = lot.paidOnSpot || 0;
+          const due = Math.max(0, totalAmount - paidSpot);
+          return (
+            <ReceiptSection title="Payment and Account Balance">
+              <ReceiptRow
+                label="Total Inward Invoiced"
+                value={money(totalAmount, 0)}
+              />
+              <ReceiptRow
+                label={`Payment Paid on Spot (${(lot.paidOnSpotMode || 'cash').toUpperCase()})`}
+                value={`− ${money(paidSpot, 0)}`}
+                labelColor={RECEIPT_COLORS.green}
+                valueColor={RECEIPT_COLORS.green}
+                strong
+              />
+              <ReceiptRow
+                label="Remaining Inward Due"
+                value={money(due, 0)}
+                strong
+                valueColor={due > 0 ? SUPPLIER_ACCENT : RECEIPT_COLORS.green}
+              />
+              {lot.paidOnSpotNote && (
+                <ReceiptRow
+                  label="Payment Note"
+                  value={lot.paidOnSpotNote}
+                  labelColor={RECEIPT_COLORS.muted}
+                  valueColor={RECEIPT_COLORS.secondary}
+                />
+              )}
+            </ReceiptSection>
+          );
+        })()}
+
         {lot.notes?.trim() && (
           <div
             style={{

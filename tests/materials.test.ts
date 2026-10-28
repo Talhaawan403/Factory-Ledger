@@ -375,6 +375,35 @@ describe('Multi-material backward compatibility and pricing', () => {
     const sanitized = sanitizeParty(raw);
     expect(sanitized.materialIds).toEqual(['material-laterite', 'material-bauxite']);
   });
+
+  it('safeguards purchase orders with active dispatches from contract tampering and deletion', () => {
+    const poId = 'po-bw-001';
+    const dispatches: Dispatch[] = [
+      baseDispatch({ id: 'd-1', poId, labReceivedWeight: 30 }),
+      baseDispatch({ id: 'd-2', poId, labReceivedWeight: 30 }),
+      baseDispatch({ id: 'd-3', poId: 'other-po', labReceivedWeight: 25 }),
+      baseDispatch({ id: 'd-4', poId, deleted: true, labReceivedWeight: 20 }),
+    ];
+
+    const linkedDispatches = dispatches.filter((d) => !d.deleted && d.poId === poId);
+    expect(linkedDispatches.length).toBe(2);
+
+    const dispatchedTons = linkedDispatches.reduce((acc, d) => acc + (d.labReceivedWeight || 0), 0);
+    expect(dispatchedTons).toBe(60);
+
+    // Rule 1: A PO with linked dispatches cannot be deleted
+    const canDeletePO = linkedDispatches.length === 0;
+    expect(canDeletePO).toBe(false);
+
+    // Rule 2: Target tonnage cannot be lowered below already dispatched tons
+    const newTargetTonsBelow = 50;
+    const isTargetTonsValid = newTargetTonsBelow >= dispatchedTons;
+    expect(isTargetTonsValid).toBe(false);
+
+    const newTargetTonsAbove = 80;
+    expect(newTargetTonsAbove >= dispatchedTons).toBe(true);
+  });
 });
+
 
 

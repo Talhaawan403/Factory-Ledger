@@ -17,9 +17,10 @@ import {
   ChevronDown,
   Package,
   Building2,
+  Banknote,
 } from 'lucide-react';
 import type { Dispatch, CoalInput, Party, PurchaseOrder, AppSettings, InventoryLot, Mine, SupplierProfile } from '../types';
-import { getDispatch, saveDispatch, deleteDispatch, getParties, getPartyPurchaseOrders, getDispatches, getLots, getMines, saveParty, getSettings, cleanNumber } from '../lib/db';
+import { getDispatch, saveDispatch, deleteDispatch, savePayment, deletePayment, getParties, getPartyPurchaseOrders, getDispatches, getLots, getMines, saveParty, getSettings, cleanNumber } from '../lib/db';
 import { getTodayDateString } from '../utils/dateUtils';
 import { calculateSettlement, getEffectiveAdjustments, calculateLotAvailabilityForDispatch, calculateMineAvailabilityForDispatch } from '../utils/calculations';
 import { getCurrencySymbol, formatAmountNumber } from '../utils/currency';
@@ -79,6 +80,10 @@ const emptyDispatch: Omit<Dispatch, 'id' | 'createdAt' | 'updatedAt'> = {
   taxMethod: 'manual',
   taxSalesPercent: undefined,
   taxIncomePercent: undefined,
+  paidOnSpot: 0,
+  paidOnSpotMode: 'cash',
+  paidOnSpotNote: '',
+  linkedPaymentId: undefined,
   notes: '',
 };
 
@@ -226,7 +231,11 @@ export default function DispatchForm() {
   const currentMaterial = getMaterialForDispatch(dispatch, settings);
   const availableSuppliers = useMemo<SupplierProfile[]>(() => {
     const partySuppliers: SupplierProfile[] = parties
-      .filter((p) => p.type === 'supplier' && !p.isArchived && !p.deleted)
+      .filter((p) => {
+        if (p.type !== 'supplier' || p.isArchived || p.deleted) return false;
+        const isDirectMine = Boolean(p.isDirectMine || p.linkedMineId || (p.name || '').toLowerCase().includes('direct ledger'));
+        return !isDirectMine;
+      })
       .map((p) => ({
         id: p.id,
         name: p.name,
@@ -369,8 +378,34 @@ export default function DispatchForm() {
       setSaveError(null);
       const statusToSave: 'pending' | 'settled' = isInTransit || cleanNumber(dispatch.labReceivedWeight) <= 0 ? 'pending' : 'settled';
       const wasSettled = dispatch.status === 'settled';
+
+      const paidAmount = cleanNumber(dispatch.paidOnSpot);
+      let finalLinkedPaymentId = dispatch.linkedPaymentId;
+
+      if (paidAmount > 0) {
+        finalLinkedPaymentId = finalLinkedPaymentId || uuidv4();
+        await savePayment({
+          id: finalLinkedPaymentId,
+          partyId: dispatch.partyId,
+          linkedDispatchId: dispatch.id,
+          date: dispatch.date,
+          amount: paidAmount,
+          type: 'received',
+          mode: dispatch.paidOnSpotMode || 'cash',
+          referenceNote: `Payment received for Truck ${dispatch.truckNumber || 'Dispatch'}${dispatch.paidOnSpotNote ? ` - ${dispatch.paidOnSpotNote}` : ''}`,
+          createdAt: Date.now(),
+        });
+      } else if (finalLinkedPaymentId) {
+        await deletePayment(finalLinkedPaymentId);
+        finalLinkedPaymentId = undefined;
+      }
+
       const savedDispatchObj = {
         ...dispatch,
+        paidOnSpot: paidAmount > 0 ? paidAmount : undefined,
+        paidOnSpotMode: paidAmount > 0 ? (dispatch.paidOnSpotMode || 'cash') : undefined,
+        paidOnSpotNote: paidAmount > 0 ? (dispatch.paidOnSpotNote || undefined) : undefined,
+        linkedPaymentId: finalLinkedPaymentId,
         baseRate: isPurityMaterial
           ? cleanNumber(dispatch.ratePerQualityUnit) * cleanNumber(dispatch.receivedQuality)
           : dispatch.baseRate,
@@ -1897,6 +1932,77 @@ export default function DispatchForm() {
             </span>
           </div>
 
+        </div>
+      </div>
+
+      {/* ── Section 7: On-the-Spot Payment (Optional) ── */}
+      <div className="ios-group">
+        <div className="ios-group-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <Banknote size={16} /> On-the-Spot Payment (Optional)
+        </div>
+        <div style={{ padding: '0 16px' }}>
+          <FloatingField
+            label="Payment Received on Spot"
+            type="number"
+            suffix={curSym}
+            value={dispatch.paidOnSpot || ''}
+            onChange={(v) => handleChange('paidOnSpot', parseFloat(v) || 0)}
+          />
+
+          {Boolean(cleanNumber(dispatch.paidOnSpot) > 0) && (
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div>
+                <label style={{ fontSize: 13, fontWeight: 500, color: 'var(--label-secondary)', marginBottom: 6, display: 'block' }}>
+                  Payment Method
+                </label>
+                <div className="ios-segmented-control" style={{ margin: 0 }}>
+                  {(['cash', 'bank', 'online', 'cheque'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={`ios-segmented-item ${(dispatch.paidOnSpotMode || 'cash') === mode ? 'active' : ''}`}
+                      onClick={() => {
+                        playPopSound();
+                        handleChange('paidOnSpotMode', mode);
+                      }}
+                    >
+                      {mode.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <FloatingField
+                label="Payment Note / Reference"
+                type="text"
+                value={dispatch.paidOnSpotNote || ''}
+                onChange={(v) => handleChange('paidOnSpotNote', v)}
+                placeholder="e.g. Cash handed to driver, Slip #123"
+              />
+
+              <div style={{
+                background: 'var(--fill-tertiary)',
+                padding: '10px 14px',
+                borderRadius: 10,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontSize: 13,
+                border: '0.5px solid var(--separator)'
+              }}>
+                <span style={{ color: 'var(--label-secondary)' }}>Remaining Truck Balance</span>
+                <span style={{ fontWeight: 700, color: Math.max(0, settlement.totalRevenue - cleanNumber(dispatch.paidOnSpot)) > 0 ? 'var(--label-primary)' : 'var(--ios-green)' }} className="tabular-nums">
+                  {curSym} {formatAmountNumber(Math.max(0, settlement.totalRevenue - cleanNumber(dispatch.paidOnSpot)), settings)}
+                  {Math.max(0, settlement.totalRevenue - cleanNumber(dispatch.paidOnSpot)) === 0 && ' (Fully Settled)'}
+                </span>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="ios-group-footnote" style={{ padding: '6px 18px 0' }}>
+          {cleanNumber(dispatch.paidOnSpot) > 0
+            ? 'A payment entry will be automatically credited to the buyer\'s ledger upon saving.'
+            : 'Leave empty if payment is pending and full bill is on credit.'}
         </div>
       </div>
 

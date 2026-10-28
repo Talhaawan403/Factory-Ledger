@@ -4,7 +4,7 @@ import { Capacitor } from '@capacitor/core';
 import type ExcelJS from 'exceljs';
 import type { Dispatch, Party, Payment, PurchaseOrder, AppSettings, InventoryLot } from '../types';
 import { calculateSettlement, calculatePartyBalance, calculateTransitLoss, calculateLedgerTotals, isDispatchPending, getEffectiveAdjustments, roundPartyLedgerAmount } from './calculations';
-import { getSettings, getExportBackupData, getSyncConflictHistory } from '../lib/db';
+import { getSettings, getExportBackupData, getSyncConflictHistory, cleanNumber } from '../lib/db';
 import { getTodayDateString, formatDisplayDate } from './dateUtils';
 import { getCurrencySymbol, formatAmountNumber, getCurrencyExcelFormat } from './currency';
 import { getMaterialForDispatch } from './materials';
@@ -291,6 +291,8 @@ export function generateSupplierDeliveryWhatsappText(
     `*Material Cost:* ${curSym} ${formatAmountNumber(materialCost, settings)}`,
     freight > 0 ? `*Freight Fare:* ${curSym} ${formatAmountNumber(freight, settings)}` : null,
     `*Total Inward Amount:* ${curSym} ${formatAmountNumber(totalAmount, settings)}`,
+    lot.paidOnSpot && lot.paidOnSpot > 0 ? `*Paid on Spot (${(lot.paidOnSpotMode || 'cash').toUpperCase()}):* - ${curSym} ${formatAmountNumber(lot.paidOnSpot, settings)}` : null,
+    lot.paidOnSpot && lot.paidOnSpot > 0 ? `*Remaining Inward Due:* ${curSym} ${formatAmountNumber(Math.max(0, totalAmount - lot.paidOnSpot), settings)}` : null,
     `*Landed Rate:* ${curSym} ${landedRate.toFixed(2)} / Ton`,
     `──────────────────────────`,
     lot.notes ? `*Notes:* ${lot.notes}` : null,
@@ -1319,10 +1321,14 @@ async function exportFleetAuditPdf(options: ExportDispatchesPdfOptions & { setti
 
     const adjText = adjList.length > 0 ? `RATE AUDIT: ${adjList.join('   •   ')}` : 'RATE AUDIT: Standard Settlement';
 
+    const paymentSnippet = d.paidOnSpot && d.paidOnSpot > 0
+      ? `Paid on Spot: ${curSym}${Math.round(d.paidOnSpot).toLocaleString('en-PK')} (${(d.paidOnSpotMode || 'cash').toUpperCase()}) • Due: ${curSym}${Math.round(Math.max(0, s.totalRevenue - d.paidOnSpot)).toLocaleString('en-PK')}`
+      : '';
     const notesSnippet = d.notes ? `Note: ${d.notes}` : '';
     const sourcingText = [
       `Sources: ${sourcesStr}`,
       `Margin: ${marginPct}%`,
+      paymentSnippet,
       notesSnippet,
     ]
       .filter(Boolean)
@@ -2300,6 +2306,8 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       'WHT Tax (Rs)',
       'Payable Rate (Rs)',
       'Gross Invoiced (Rs)',
+      'Paid on Spot (Rs)',
+      'Balance Due (Rs)',
       'Logistics Notes',
     ];
 
@@ -2312,7 +2320,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: XL_PALETTE.HEADER_TEXT } };
       cell.alignment = {
         vertical: 'middle',
-        horizontal: i < 4 ? 'center' : i >= 4 && i <= 19 ? 'right' : 'left',
+        horizontal: i < 4 ? 'center' : i >= 4 && i <= 21 ? 'right' : 'left',
       };
       cell.border = BORDER_CELL_LIGHT;
     });
@@ -2330,6 +2338,9 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       const transit = calculateTransitLoss(d);
       const isPending = transit.isPending;
       const gcvDiff = d.targetGcv && d.labActualGcv ? d.labActualGcv - d.targetGcv : 0;
+      const grossInvoiced = isPending ? 0 : Math.round(s.totalRevenue);
+      const paidSpot = cleanNumber(d.paidOnSpot);
+      const balDue = Math.max(0, grossInvoiced - paidSpot);
 
       row.values = [
         idx + 1,
@@ -2351,11 +2362,13 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         adj.premium,
         s.taxDeduction ? parseFloat(s.taxDeduction.toFixed(2)) : 0,
         parseFloat(s.payableRate.toFixed(2)),
-        isPending ? 0 : Math.round(s.totalRevenue),
+        grossInvoiced,
+        paidSpot > 0 ? paidSpot : 0,
+        paidSpot > 0 ? balDue : grossInvoiced,
         isPending ? (d.notes ? `[In-Transit] ${d.notes}` : 'In-Transit (Awaiting Weighbridge)') : (d.notes || ''),
       ];
 
-      for (let c = 1; c <= 21; c++) {
+      for (let c = 1; c <= 23; c++) {
         const cell = row.getCell(c);
         cell.font = { name: 'Calibri', size: 9.5, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
         cell.fill = {
@@ -2382,10 +2395,12 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
         } else if (c >= 15 && c <= 19) {
           cell.alignment = { vertical: 'middle', horizontal: 'right' };
           cell.numFmt = '#,##0.00';
-        } else if (c === 20) {
+        } else if (c === 20 || c === 21 || c === 22) {
           cell.alignment = { vertical: 'middle', horizontal: 'right' };
           cell.numFmt = '#,##0';
-          cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+          if (c === 20 || c === 22) {
+            cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
+          }
         } else {
           cell.alignment = { vertical: 'middle', horizontal: 'left' };
         }
@@ -2401,6 +2416,8 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
     const totLoaded = dispTotals.loadedTonsSettled;
     const totReceived = dispTotals.receivedTons;
     const totTransitDiff = dispTotals.transitDiffTons;
+    const totalPaidOnSpot = sortedDispatches.reduce((sum, d) => sum + (cleanNumber(d.paidOnSpot) || 0), 0);
+    const totalRemainingDue = Math.max(0, Math.round(totalBilled) - totalPaidOnSpot);
 
     dTotRow.values = [
       '',
@@ -2423,10 +2440,12 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       '',
       '',
       Math.round(totalBilled),
+      totalPaidOnSpot > 0 ? totalPaidOnSpot : '-',
+      totalPaidOnSpot > 0 ? totalRemainingDue : Math.round(totalBilled),
       '',
     ];
 
-    for (let c = 1; c <= 21; c++) {
+    for (let c = 1; c <= 23; c++) {
       const cell = dTotRow.getCell(c);
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: XL_PALETTE.TOTAL_FILL } };
       cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: XL_PALETTE.TEXT_PRIMARY } };
@@ -2437,7 +2456,7 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       } else if (c === 5 || c === 6 || c === 7) {
         cell.alignment = { vertical: 'middle', horizontal: 'right' };
         cell.numFmt = '#,##0.00';
-      } else if (c === 20) {
+      } else if (c === 20 || c === 21 || c === 22) {
         cell.alignment = { vertical: 'middle', horizontal: 'right' };
         cell.numFmt = '#,##0';
       }
@@ -2464,7 +2483,9 @@ export async function exportDispatchesExcel(options: ExportDispatchesExcelOption
       18: 14,
       19: 15,
       20: 18,
-      21: 24,
+      21: 18,
+      22: 18,
+      23: 24,
     });
 
     // ════════════════════════════════════════════════════════════════════════

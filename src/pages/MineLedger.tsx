@@ -234,6 +234,21 @@ export default function MineLedger() {
     );
   }, [mine, parties]);
 
+  // Commercial suppliers available for inward lot entry in this mine.
+  // Strictly excludes companion direct mine accounts of ANY mine (so Mine A only sees Mine A's direct account and independent suppliers).
+  const availableInwardSuppliers = useMemo(() => {
+    return parties.filter((p) => {
+      if (p.type !== 'supplier' || p.isArchived) return false;
+      if (directParty && p.id === directParty.id) return false;
+      const isDirectMine = Boolean(
+        p.isDirectMine ||
+        p.linkedMineId ||
+        p.name.toLowerCase().includes('direct ledger')
+      );
+      return !isDirectMine;
+    });
+  }, [parties, directParty]);
+
   // Stock & Financial Summary
   const stockSummary = useMemo(() => {
     if (supplier) {
@@ -276,6 +291,29 @@ export default function MineLedger() {
         });
         if (matchingInputs.length === 0) return null;
         const totalUsedWeight = matchingInputs.reduce((sum, ci) => sum + (ci.weight || 0), 0);
+
+        const drawnLots = matchingInputs
+          .map((ci) => {
+            if (!ci.lotId) return null;
+            const lot = lots.find((l) => l.id === ci.lotId && !l.deleted);
+            if (!lot) return null;
+            const lotStock = calculateLotStock(lot, dispatches);
+            return {
+              lotId: lot.id,
+              drawnWeight: ci.weight || 0,
+              lotTruck: lot.truckNumber,
+              lotTotalWeight: lot.receivedWeight || lot.billedWeight || lot.tonnage || 0,
+              remainingWeight: lotStock.remainingWeight,
+            };
+          })
+          .filter(Boolean) as Array<{
+            lotId: string;
+            drawnWeight: number;
+            lotTruck?: string;
+            lotTotalWeight: number;
+            remainingWeight: number;
+          }>;
+
         return {
           dispatch: d,
           usedWeight: totalUsedWeight,
@@ -285,9 +323,21 @@ export default function MineLedger() {
               0
             )
           ),
+          drawnLots,
         };
       })
-      .filter(Boolean) as Array<{ dispatch: Dispatch; usedWeight: number; cost: number }>;
+      .filter(Boolean) as Array<{
+        dispatch: Dispatch;
+        usedWeight: number;
+        cost: number;
+        drawnLots: Array<{
+          lotId: string;
+          drawnWeight: number;
+          lotTruck?: string;
+          lotTotalWeight: number;
+          remainingWeight: number;
+        }>;
+      }>;
   }, [mine, supplier, lots, dispatches]);
 
   // Combined activity list (Inflow vs Outflow)
@@ -309,6 +359,13 @@ export default function MineLedger() {
       usedDispatchTruck?: string;
       usedPartyName?: string;
       linkedDispatchObj?: Dispatch;
+      drawnLots?: Array<{
+        lotId: string;
+        drawnWeight: number;
+        lotTruck?: string;
+        lotTotalWeight: number;
+        remainingWeight: number;
+      }>;
       rawLot?: InventoryLot;
       rawDispatch?: Dispatch;
       rawPayment?: Payment;
@@ -367,6 +424,7 @@ export default function MineLedger() {
         value: item.cost,
         title: `Dispatched: ${d.truckNumber || 'Truck'}`,
         subtitle: partyName,
+        drawnLots: item.drawnLots,
         rawDispatch: d,
       });
     }
@@ -532,6 +590,7 @@ export default function MineLedger() {
 
         if (
           stockForm.supplierId === '__auto_direct__' ||
+          (currentDirect && stockForm.supplierId === currentDirect.id) ||
           (!stockForm.supplierId &&
             (!finalBoughtFrom || finalBoughtFrom.toLowerCase().includes('direct ledger')))
         ) {
@@ -1419,6 +1478,30 @@ export default function MineLedger() {
             {activityList.map((item) => {
               const isInflow = item.type === 'inflow';
               const isPayment = item.type === 'payment';
+              const isOutflow = item.type === 'outflow';
+              const isPartiallyUsedInflow = isInflow && Boolean(item.isUsedInDispatch && !item.isFullyAllocated);
+              const isFullyUsedInflow = isInflow && Boolean(item.isUsedInDispatch && item.isFullyAllocated);
+
+              let badgeText = isPayment ? 'PAYMENT' : isInflow ? 'INFLOW' : 'OUTFLOW';
+              let badgeBg = isPayment
+                ? 'rgba(52, 199, 89, 0.15)'
+                : isInflow
+                  ? 'rgba(52, 199, 89, 0.12)'
+                  : 'rgba(0, 122, 255, 0.12)';
+              let badgeColor = isPayment || isInflow ? 'var(--ios-green)' : 'var(--ios-blue)';
+              let badgeBorder = 'none';
+
+              if (isPartiallyUsedInflow) {
+                badgeText = `PARTIAL (${item.remainingTons?.toFixed(1)}t LEFT)`;
+                badgeBg = 'rgba(255, 149, 0, 0.15)';
+                badgeColor = '#FF9500';
+                badgeBorder = '0.5px solid rgba(255, 149, 0, 0.35)';
+              } else if (isFullyUsedInflow) {
+                badgeText = 'FULLY DISPATCHED';
+                badgeBg = 'rgba(175, 82, 222, 0.14)';
+                badgeColor = '#AF52DE';
+                badgeBorder = '0.5px solid rgba(175, 82, 222, 0.3)';
+              }
 
               return (
                 <div
@@ -1454,10 +1537,16 @@ export default function MineLedger() {
                         borderRadius: 10,
                         background: isPayment
                           ? 'rgba(52, 199, 89, 0.15)'
-                          : isInflow
-                            ? 'rgba(52, 199, 89, 0.12)'
-                            : 'rgba(0, 122, 255, 0.12)',
-                        color: isPayment || isInflow ? 'var(--ios-green)' : 'var(--ios-blue)',
+                          : isPartiallyUsedInflow
+                            ? 'rgba(255, 149, 0, 0.15)'
+                            : isInflow
+                              ? 'rgba(52, 199, 89, 0.12)'
+                              : 'rgba(0, 122, 255, 0.12)',
+                        color: isPayment || (!isPartiallyUsedInflow && isInflow)
+                          ? 'var(--ios-green)'
+                          : isPartiallyUsedInflow
+                            ? '#FF9500'
+                            : 'var(--ios-blue)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -1478,15 +1567,12 @@ export default function MineLedger() {
                             fontWeight: 700,
                             padding: '1px 5px',
                             borderRadius: 4,
-                            background: isPayment
-                              ? 'rgba(52, 199, 89, 0.15)'
-                              : isInflow
-                                ? 'rgba(52, 199, 89, 0.12)'
-                                : 'rgba(0, 122, 255, 0.12)',
-                            color: isPayment || isInflow ? 'var(--ios-green)' : 'var(--ios-blue)',
+                            background: badgeBg,
+                            color: badgeColor,
+                            border: badgeBorder,
                           }}
                         >
-                          {isPayment ? 'PAYMENT' : isInflow ? 'INFLOW' : 'OUTFLOW'}
+                          {badgeText}
                         </span>
                       </div>
 
@@ -1494,10 +1580,97 @@ export default function MineLedger() {
                         {formatDisplayDate(item.date)} · {item.subtitle}
                       </div>
 
-                      {isInflow && item.remainingTons !== undefined && (
-                        <div style={{ fontSize: 11, color: 'var(--label-tertiary)', marginTop: 1 }}>
-                          Remaining: <strong>{item.remainingTons.toFixed(2)}t</strong>
-                          {item.isFullyAllocated ? ' · Fully allocated' : ''}
+                      {/* Inflow: Partially Used Stock Indicator */}
+                      {isPartiallyUsedInflow && item.remainingTons !== undefined && (
+                        <div
+                          style={{
+                            marginTop: 5,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            background: 'rgba(255, 149, 0, 0.08)',
+                            border: '0.5px solid rgba(255, 149, 0, 0.25)',
+                            padding: '3px 8px',
+                            borderRadius: 7,
+                            fontSize: 11,
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <span style={{ color: 'var(--label-secondary)' }}>
+                            {item.usedTons?.toFixed(1)}t dispatched{item.usedDispatchTruck ? ` (${item.usedDispatchTruck})` : ''}
+                          </span>
+                          <span style={{ color: 'var(--separator-opaque)' }}>•</span>
+                          <span style={{ color: '#FF9500', fontWeight: 700 }}>
+                            {item.remainingTons.toFixed(2)}t left in yard
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Inflow: Fully Allocated Stock */}
+                      {isFullyUsedInflow && (
+                        <div
+                          style={{
+                            marginTop: 5,
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 5,
+                            background: 'rgba(175, 82, 222, 0.08)',
+                            border: '0.5px solid rgba(175, 82, 222, 0.2)',
+                            padding: '3px 8px',
+                            borderRadius: 7,
+                            fontSize: 11,
+                          }}
+                        >
+                          <span style={{ color: 'var(--label-secondary)' }}>
+                            All {item.tons.toFixed(1)}t dispatched{item.usedDispatchTruck ? ` (${item.usedDispatchTruck})` : ''}
+                          </span>
+                          <span style={{ color: 'var(--separator-opaque)' }}>•</span>
+                          <span style={{ color: '#AF52DE', fontWeight: 600 }}>0t remaining in yard</span>
+                        </div>
+                      )}
+
+                      {/* Inflow: Fresh Untouched Stock */}
+                      {isInflow && !item.isUsedInDispatch && (
+                        <div style={{ fontSize: 11, color: 'var(--ios-green)', marginTop: 3, fontWeight: 500 }}>
+                          Full stock available in yard ({item.tons.toFixed(1)}t)
+                        </div>
+                      )}
+
+                      {/* Outflow: Linked inward lots indicator */}
+                      {isOutflow && item.drawnLots && item.drawnLots.length > 0 && (
+                        <div style={{ marginTop: 5, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          {item.drawnLots.map((dl, idx) => (
+                            <div
+                              key={idx}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 5,
+                                background: 'rgba(0, 122, 255, 0.08)',
+                                border: '0.5px solid rgba(0, 122, 255, 0.25)',
+                                padding: '3px 8px',
+                                borderRadius: 7,
+                                fontSize: 11,
+                                width: 'fit-content',
+                                flexWrap: 'wrap',
+                              }}
+                            >
+                              <span style={{ color: 'var(--ios-blue)', fontWeight: 600 }}>
+                                Drawn from {dl.lotTruck ? `Truck ${dl.lotTruck}` : 'Inward Batch'} ({dl.drawnWeight.toFixed(1)}t of {dl.lotTotalWeight.toFixed(1)}t)
+                              </span>
+                              <span style={{ color: 'var(--separator-opaque)' }}>•</span>
+                              <span
+                                style={{
+                                  color: dl.remainingWeight > 0.001 ? '#FF9500' : 'var(--label-tertiary)',
+                                  fontWeight: 700,
+                                }}
+                              >
+                                {dl.remainingWeight > 0.001
+                                  ? `${dl.remainingWeight.toFixed(2)}t left behind in yard`
+                                  : 'Lot fully used'}
+                              </span>
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>
@@ -1528,6 +1701,32 @@ export default function MineLedger() {
                           >
                             {isInflow ? '+' : '−'}{item.tons.toFixed(1)}t
                           </div>
+                          {isPartiallyUsedInflow && item.remainingTons !== undefined && (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 700,
+                                color: '#FF9500',
+                                marginTop: 1,
+                              }}
+                              className="tabular-nums"
+                            >
+                              {item.remainingTons.toFixed(1)}t left
+                            </div>
+                          )}
+                          {isFullyUsedInflow && (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                fontWeight: 600,
+                                color: 'var(--label-tertiary)',
+                                marginTop: 1,
+                              }}
+                              className="tabular-nums"
+                            >
+                              0t left
+                            </div>
+                          )}
                           <div style={{ fontSize: 12, color: 'var(--label-secondary)', marginTop: 1 }} className="tabular-nums">
                             {curSym} {formatAmountNumber(item.value, settings)}
                           </div>
@@ -1667,21 +1866,21 @@ export default function MineLedger() {
                     <IOSSelect<string>
                       label="Supplier / Bought From"
                       value={
-                        stockForm.supplierId === '__auto_direct__'
-                          ? '__auto_direct__'
+                        stockForm.supplierId === '__auto_direct__' ||
+                        (directParty && stockForm.supplierId === directParty.id) ||
+                        (!stockForm.supplierId && stockForm.boughtFrom && stockForm.boughtFrom.toLowerCase().includes('direct ledger'))
+                          ? (directParty ? directParty.id : '__auto_direct__')
                           : (stockForm.supplierId ||
-                            parties.find(
-                              (p) =>
-                                p.type === 'supplier' &&
-                                p.name.toLowerCase() === stockForm.boughtFrom.trim().toLowerCase()
+                            availableInwardSuppliers.find(
+                              (p) => p.name.toLowerCase() === stockForm.boughtFrom.trim().toLowerCase()
                             )?.id ||
-                            (stockForm.boughtFrom ? stockForm.boughtFrom : '__auto_direct__'))
+                            (stockForm.boughtFrom ? stockForm.boughtFrom : (directParty ? directParty.id : '__auto_direct__')))
                       }
                       onChange={(val) => {
-                        if (val === '__auto_direct__') {
+                        if (val === '__auto_direct__' || (directParty && val === directParty.id)) {
                           setStockForm((prev) => ({
                             ...prev,
-                            supplierId: '__auto_direct__',
+                            supplierId: directParty ? directParty.id : '__auto_direct__',
                             boughtFrom: `${mine.name} Direct Ledger`,
                           }));
                         } else {
@@ -1711,15 +1910,13 @@ export default function MineLedger() {
                           icon: <Pickaxe size={16} color="var(--ios-blue)" />,
                           badge: directParty ? 'Direct Mine' : 'Auto-Create',
                         },
-                        ...parties
-                          .filter((p) => p.type === 'supplier' && !p.isArchived && p.id !== directParty?.id)
-                          .map((p) => ({
-                            value: p.id,
-                            label: p.name,
-                            subtitle: p.phone || p.address || 'Saved Supplier',
-                            icon: <Store size={16} color="#FF9500" />,
-                            badge: 'Supplier',
-                          })),
+                        ...availableInwardSuppliers.map((p) => ({
+                          value: p.id,
+                          label: p.name,
+                          subtitle: p.phone || p.address || 'Saved Supplier',
+                          icon: <Store size={16} color="#FF9500" />,
+                          badge: 'Supplier',
+                        })),
                       ]}
                       searchable={true}
                       searchPlaceholder="Search suppliers or add custom..."
@@ -2148,6 +2345,9 @@ export default function MineLedger() {
         <StockPreviewModal
           lot={previewLot}
           mine={mine}
+          linkedDispatches={dispatches.filter(
+            (d) => !d.deleted && (d.coalInputs || []).some((ci) => ci.lotId === previewLot.id)
+          )}
           settings={settings}
           onClose={() => setPreviewLot(null)}
           onEdit={(l) => {
@@ -2157,6 +2357,10 @@ export default function MineLedger() {
           onDelete={(l) => {
             setPreviewLot(null);
             setLotToDelete(l);
+          }}
+          onViewDispatch={(d) => {
+            setPreviewLot(null);
+            setPreviewDispatch(d);
           }}
         />
       )}

@@ -292,6 +292,10 @@ export function sanitizeDispatch(d: Partial<Dispatch>): Dispatch {
       : [],
     gcvAdjustment: d.gcvAdjustment === 'prorata' ? 'prorata' : (d.gcvAdjustment === 'manual' ? 'manual' : undefined),
     gcvAdjustmentRounding: d.gcvAdjustmentRounding === 'rupee' ? 'rupee' : (d.gcvAdjustmentRounding === 'paisa' ? 'paisa' : undefined),
+    paidOnSpot: d.paidOnSpot !== undefined ? cleanNumber(d.paidOnSpot) : undefined,
+    paidOnSpotMode: d.paidOnSpotMode || undefined,
+    paidOnSpotNote: d.paidOnSpotNote ? String(d.paidOnSpotNote).trim() : undefined,
+    linkedPaymentId: d.linkedPaymentId || undefined,
     notes: d.notes || undefined,
     status,
     settledAt: status === 'settled' && d.settledAt !== undefined ? cleanNumber(d.settledAt) : undefined,
@@ -350,6 +354,8 @@ export function sanitizePayment(p: Partial<Payment>): Payment {
     partyId,
     supplierId: p.supplierId || undefined,
     mineId: p.mineId || undefined,
+    linkedDispatchId: p.linkedDispatchId || undefined,
+    linkedLotId: p.linkedLotId || undefined,
     date: p.date || getTodayDateString(),
     amount: cleanNumber(p.amount),
     type: p.type === 'paid' ? 'paid' : 'received',
@@ -464,6 +470,10 @@ export function sanitizeLot(l: Partial<InventoryLot>): InventoryLot {
     grade: (l.grade || '').trim() || undefined,
     truckNumber: (l.truckNumber || '').trim() || undefined,
     mineSource: (l.mineSource || l.mineName || '').trim() || undefined,
+    paidOnSpot: l.paidOnSpot !== undefined ? cleanNumber(l.paidOnSpot) : undefined,
+    paidOnSpotMode: l.paidOnSpotMode || undefined,
+    paidOnSpotNote: l.paidOnSpotNote ? String(l.paidOnSpotNote).trim() : undefined,
+    linkedPaymentId: l.linkedPaymentId || undefined,
     notes: (l.notes || '').trim() || undefined,
     createdAt: cleanNumber(l.createdAt, now),
     updatedAt: cleanNumber(l.updatedAt, cleanNumber(l.createdAt, now)),
@@ -845,6 +855,9 @@ export async function deleteDispatch(id: string): Promise<void> {
   });
 
   recordTombstone(id);
+  if (existing?.linkedPaymentId) {
+    await deletePayment(existing.linkedPaymentId);
+  }
   notifyLedgerMutation('dispatch', id, 'delete');
   changedLotIds.forEach((lotId) => notifyLedgerMutation('lot', lotId, 'update'));
 }
@@ -1335,6 +1348,9 @@ export async function deleteLot(id: string): Promise<void> {
     });
   }
   recordTombstone(id); // kept for backward-compat with any cloud pull that may re-introduce this lot id
+  if (existing?.linkedPaymentId) {
+    await deletePayment(existing.linkedPaymentId);
+  }
   notifyLedgerMutation('lot', id, 'delete');
 }
 
@@ -2166,6 +2182,8 @@ export function validateBackupPayload(backup: any): BackupValidationResult {
     if (!activePartyIds.has(payment.partyId)) return fail(`${label} references non-existent party "${payment.partyId}".`);
     if (!['received', 'paid'].includes(payment.type)) return fail(`${label} has an invalid payment type.`);
     if (!['bank', 'cash', 'cheque', 'online'].includes(payment.mode)) return fail(`${label} has an invalid payment mode.`);
+    if (payment.linkedDispatchId !== undefined && !isText(payment.linkedDispatchId, true)) return fail(`${label} has an invalid linked dispatch reference.`);
+    if (payment.linkedLotId !== undefined && !isText(payment.linkedLotId, true)) return fail(`${label} has an invalid linked lot reference.`);
   }
 
   const overheadFields = ['loading', 'freight', 'crush', 'royalty', 'other'] as const;
@@ -2219,6 +2237,10 @@ export function validateBackupPayload(backup: any): BackupValidationResult {
     for (const field of ['commissionPerTon', 'manualDeduction', 'manualPremium', 'manualTax', 'taxSalesPercent', 'taxIncomePercent'] as const) {
       if (dispatch[field] !== undefined && !isNumber(dispatch[field])) return fail(`${label} has an invalid ${field}.`);
     }
+    if (dispatch.paidOnSpot !== undefined && !isNumber(dispatch.paidOnSpot)) return fail(`${label} has an invalid paidOnSpot amount.`);
+    if (dispatch.paidOnSpotMode !== undefined && !['bank', 'cash', 'cheque', 'online'].includes(dispatch.paidOnSpotMode)) return fail(`${label} has an invalid paidOnSpotMode.`);
+    if (dispatch.paidOnSpotNote !== undefined && !isText(dispatch.paidOnSpotNote)) return fail(`${label} has an invalid paidOnSpotNote.`);
+    if (dispatch.linkedPaymentId !== undefined && !isText(dispatch.linkedPaymentId, true)) return fail(`${label} has an invalid linkedPaymentId reference.`);
   }
 
   for (const expense of expenses) {
@@ -2256,6 +2278,10 @@ export function validateBackupPayload(backup: any): BackupValidationResult {
     if (lot.itemId !== undefined && !isText(lot.itemId, true)) return fail(`${label} has an invalid item reference.`);
     if (lot.itemName !== undefined && !isText(lot.itemName, true)) return fail(`${label} has an invalid item name.`);
     if (lot.supplierId !== undefined && !isText(lot.supplierId, true)) return fail(`${label} has an invalid supplier reference.`);
+    if (lot.paidOnSpot !== undefined && !isNumber(lot.paidOnSpot)) return fail(`${label} has an invalid paidOnSpot amount.`);
+    if (lot.paidOnSpotMode !== undefined && !['bank', 'cash', 'cheque', 'online'].includes(lot.paidOnSpotMode)) return fail(`${label} has an invalid paidOnSpotMode.`);
+    if (lot.paidOnSpotNote !== undefined && !isText(lot.paidOnSpotNote)) return fail(`${label} has an invalid paidOnSpotNote.`);
+    if (lot.linkedPaymentId !== undefined && !isText(lot.linkedPaymentId, true)) return fail(`${label} has an invalid linkedPaymentId reference.`);
   }
 
   for (const mine of mines) {

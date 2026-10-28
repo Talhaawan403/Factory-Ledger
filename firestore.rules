@@ -165,6 +165,8 @@ service cloud.firestore {
               optionalEnum('mode', ['bank', 'cash', 'cheque', 'online']) &&
               optionalNonEmptyText('supplierId') &&
               optionalNonEmptyText('mineId') &&
+              optionalNonEmptyText('linkedDispatchId') &&
+              optionalNonEmptyText('linkedLotId') &&
               hasEpochMillis('createdAt'));
     }
 
@@ -201,7 +203,11 @@ service cloud.firestore {
               optionalNonEmptyText('mineId') && optionalText('mineName') &&
               optionalNonEmptyText('itemId') && optionalNonEmptyText('itemName') &&
               optionalNonEmptyText('supplierId') &&
-              optionalNonNegativeNumber('loadingCost') && optionalNonNegativeNumber('freightCost'));
+              optionalNonNegativeNumber('loadingCost') && optionalNonNegativeNumber('freightCost') &&
+              optionalNonNegativeNumber('paidOnSpot') &&
+              optionalEnum('paidOnSpotMode', ['bank', 'cash', 'cheque', 'online']) &&
+              optionalText('paidOnSpotNote') &&
+              optionalNonEmptyText('linkedPaymentId'));
     }
 
     function isValidMine() {
@@ -229,7 +235,11 @@ service cloud.firestore {
               optionalEnum('gcvAdjustmentRounding', ['rupee', 'paisa']) &&
               optionalEnum('taxMethod', ['manual', 'formula_18_5']) &&
               optionalEnum('status', ['pending', 'settled']) &&
-              optionalEpochMillis('settledAt') && optionalDate('settledDate'));
+              optionalEpochMillis('settledAt') && optionalDate('settledDate') &&
+              optionalNonNegativeNumber('paidOnSpot') &&
+              optionalEnum('paidOnSpotMode', ['bank', 'cash', 'cheque', 'online']) &&
+              optionalText('paidOnSpotNote') &&
+              optionalNonEmptyText('linkedPaymentId'));
     }
 
     function isSafeSettings() {

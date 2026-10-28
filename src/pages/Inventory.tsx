@@ -183,11 +183,16 @@ export default function Inventory() {
       });
     }
 
+    // Helper to identify companion direct mine entities (they are already tracked under Mine cards)
+    const isDirectMineParty = (p: Party) =>
+      Boolean(p.isDirectMine || p.linkedMineId || (p.name || '').toLowerCase().includes('direct ledger'));
+
     // Suppliers (Parties of type 'supplier' + legacy settings.suppliers)
-    const partySuppliers = parties.filter((p) => p.type === 'supplier' && !p.isArchived);
+    // Filter out direct mine ledgers so mines aren't duplicated as 0t suppliers in Inventory
+    const partySuppliers = parties.filter((p) => p.type === 'supplier' && !p.isArchived && !isDirectMineParty(p));
     const partySupplierIds = new Set(partySuppliers.map((p) => p.id));
     const legacySuppliers = normalizeSuppliers(settings?.suppliers).filter(
-      (s) => !s.isArchived && !partySupplierIds.has(s.id)
+      (s) => !s.isArchived && !partySupplierIds.has(s.id) && !(s.name || '').toLowerCase().includes('direct ledger')
     );
 
     const allSuppliers: SupplierProfile[] = [
@@ -229,10 +234,13 @@ export default function Inventory() {
 
   // Overall Yard Summary for current active tab
   const activeTabSummary = useMemo(() => {
-    const partySuppliers = parties.filter((p) => p.type === 'supplier' && !p.isArchived);
+    const isDirectMineParty = (p: Party) =>
+      Boolean(p.isDirectMine || p.linkedMineId || (p.name || '').toLowerCase().includes('direct ledger'));
+
+    const partySuppliers = parties.filter((p) => p.type === 'supplier' && !p.isArchived && !isDirectMineParty(p));
     const partySupplierIds = new Set(partySuppliers.map((p) => p.id));
     const legacySuppliers = normalizeSuppliers(settings?.suppliers).filter(
-      (s) => !s.isArchived && !partySupplierIds.has(s.id)
+      (s) => !s.isArchived && !partySupplierIds.has(s.id) && !(s.name || '').toLowerCase().includes('direct ledger')
     );
     const allSuppliers: SupplierProfile[] = [
       ...partySuppliers.map((p) => ({

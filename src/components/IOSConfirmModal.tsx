@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { Trash2, AlertTriangle, Lock } from 'lucide-react';
+import { Trash2, AlertTriangle, Lock, Link2 } from 'lucide-react';
 import { useRefraction } from '../hooks/useRefraction';
 import { playPopSound } from '../utils/delight';
 
@@ -13,7 +13,7 @@ export interface IOSConfirmModalProps {
   singleButton?: boolean;
   destructive?: boolean;
   countdownSeconds?: number;
-  icon?: 'trash' | 'warning' | 'none';
+  icon?: 'trash' | 'warning' | 'link' | 'none';
   onConfirm: () => void | Promise<void>;
   onCancel?: () => void;
 }
@@ -89,7 +89,7 @@ export default function IOSConfirmModal({
         className="ios-modal-backdrop"
         onClick={handleCancel}
         style={{
-          zIndex: 99998,
+          zIndex: 100005,
           background: 'rgba(0, 0, 0, 0.42)',
           backdropFilter: 'blur(5px)',
           WebkitBackdropFilter: 'blur(5px)',
@@ -101,7 +101,7 @@ export default function IOSConfirmModal({
         className="ios-confirm-dialog glass"
         style={{
           '--glass-radius': `${GLASS_RADIUS}px`,
-          zIndex: 99999,
+          zIndex: 100006,
         } as CSSProperties}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
@@ -141,6 +141,23 @@ export default function IOSConfirmModal({
               }}
             >
               <AlertTriangle size={23} strokeWidth={2.2} />
+            </div>
+          )}
+          {icon === 'link' && (
+            <div
+              style={{
+                width: 48,
+                height: 48,
+                margin: '0 auto 12px',
+                borderRadius: '50%',
+                background: 'rgba(0, 122, 255, 0.12)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--ios-blue, #007AFF)',
+              }}
+            >
+              <Link2 size={23} strokeWidth={2.2} />
             </div>
           )}
 
@@ -193,7 +210,7 @@ export default function IOSConfirmModal({
                 <span>{confirmText} ({countdown}s)</span>
               </>
             ) : (
-              <span>{isSubmitting ? 'Deleting…' : confirmText}</span>
+              <span>{isSubmitting ? (destructive ? 'Deleting…' : 'Processing…') : confirmText}</span>
             )}
           </button>
 

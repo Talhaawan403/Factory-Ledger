@@ -2,7 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import IOSDatePicker from '../components/IOSDatePicker';
 import { getDispatches, getParties, getPurchaseOrders, getSettings, getLots, deleteLot } from '../lib/db';
 import type { Dispatch, Party, PurchaseOrder, AppSettings, InventoryLot } from '../types';
-import { calculateSettlement, calculateLedgerTotals, isDispatchPending } from '../utils/calculations';
+import { calculateSettlement, calculateLedgerTotals, isDispatchPending, calculateLotStock } from '../utils/calculations';
 import { formatCurrency, formatCompactFinancial } from '../utils/currency';
 import { formatDisplayDate } from '../utils/dateUtils';
 import { useLedgerListener } from '../hooks/useLedgerListener';
@@ -860,6 +860,22 @@ export default function AllEntries() {
                                                             {material.name}
                                                         </span>
                                                     )}
+                                                    {Boolean(dispatch.paidOnSpot && dispatch.paidOnSpot > 0) && (
+                                                        <span
+                                                            style={{
+                                                                fontSize: 10,
+                                                                fontWeight: 700,
+                                                                color: 'var(--ios-green)',
+                                                                background: 'rgba(52, 199, 89, 0.14)',
+                                                                padding: '1.5px 6px',
+                                                                borderRadius: 4,
+                                                                flexShrink: 0,
+                                                                whiteSpace: 'nowrap'
+                                                            }}
+                                                        >
+                                                            {(dispatch.paidOnSpot || 0) >= settlement.totalRevenue ? 'PAID' : `PAID ${formatCurrency(dispatch.paidOnSpot || 0, settings)}`}
+                                                        </span>
+                                                    )}
                                                     {isPending && (
                                                         <span
                                                             style={{
@@ -938,6 +954,50 @@ export default function AllEntries() {
                                                     {isPending ? 'Pending Weighbridge' : `Rev: ${formatCurrency(settlement.totalRevenue, settings)}`}
                                                 </span>
                                             </div>
+                                            {/* Linked lot sources pill */}
+                                            {(() => {
+                                                const linkedInputsWithLots = (dispatch.coalInputs || []).filter((ci) => ci.lotId);
+                                                if (linkedInputsWithLots.length === 0) return null;
+                                                const lotDetails: Array<{ truck?: string; drawn: number; remaining: number }> = [];
+                                                for (const ci of linkedInputsWithLots) {
+                                                    const l = lots.find((lotItem) => lotItem.id === ci.lotId && !lotItem.deleted);
+                                                    if (!l) continue;
+                                                    const st = calculateLotStock(l, dispatches);
+                                                    lotDetails.push({
+                                                        truck: l.truckNumber,
+                                                        drawn: ci.weight || 0,
+                                                        remaining: st.remainingWeight,
+                                                    });
+                                                }
+
+                                                if (lotDetails.length === 0) return null;
+                                                return (
+                                                    <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                                                        {lotDetails.map((ld, i) => (
+                                                            <span
+                                                                key={i}
+                                                                style={{
+                                                                    fontSize: 11,
+                                                                    fontWeight: 600,
+                                                                    color: 'var(--ios-blue)',
+                                                                    background: 'rgba(0, 122, 255, 0.08)',
+                                                                    padding: '1.5px 6px',
+                                                                    borderRadius: 5,
+                                                                    display: 'inline-flex',
+                                                                    alignItems: 'center',
+                                                                    gap: 4,
+                                                                }}
+                                                            >
+                                                                <span>Drawn from {ld.truck ? `Truck ${ld.truck}` : 'Lot'} ({ld.drawn.toFixed(1)}t)</span>
+                                                                <span style={{ color: 'var(--separator-opaque)' }}>•</span>
+                                                                <span style={{ color: ld.remaining > 0.001 ? '#FF9500' : 'var(--label-tertiary)' }}>
+                                                                    {ld.remaining > 0.001 ? `${ld.remaining.toFixed(1)}t left` : 'depleted'}
+                                                                </span>
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                );
+                                            })()}
                                         </div>
 
                                         <ChevronRight className="ios-chevron" strokeWidth={2.5} style={{ flexShrink: 0 }} />
@@ -953,6 +1013,9 @@ export default function AllEntries() {
                                 const totalAmt = lot.totalValue !== undefined ? Number(lot.totalValue) : weight * rate + freight;
                                 const landed = weight > 0 ? (lot.landedRate || totalAmt / weight) : rate;
                                 const monthColor = '#FF9500';
+                                const lotStock = calculateLotStock(lot, dispatches);
+                                const isPartiallyUsed = lotStock.usedWeight > 0.001 && lotStock.remainingWeight > 0.001;
+                                const isFullyAllocated = lotStock.usedWeight > 0.001 && lotStock.remainingWeight <= 0.001;
 
                                 return (
                                     <div
@@ -999,15 +1062,15 @@ export default function AllEntries() {
                                                         style={{
                                                             fontSize: 10,
                                                             fontWeight: 700,
-                                                            background: 'rgba(255, 149, 0, 0.12)',
-                                                            color: '#FF9500',
+                                                            background: isFullyAllocated ? 'rgba(175, 82, 222, 0.12)' : isPartiallyUsed ? 'rgba(255, 149, 0, 0.15)' : 'rgba(255, 149, 0, 0.12)',
+                                                            color: isFullyAllocated ? '#AF52DE' : isPartiallyUsed ? '#FF9500' : '#FF9500',
                                                             padding: '1.5px 6px',
                                                             borderRadius: 4,
                                                             letterSpacing: '0.3px',
                                                             flexShrink: 0
                                                         }}
                                                     >
-                                                        INWARD
+                                                        {isFullyAllocated ? 'FULLY USED' : isPartiallyUsed ? `PARTIAL (${lotStock.remainingWeight.toFixed(1)}t LEFT)` : 'INWARD'}
                                                     </span>
                                                     {lot.storedAt && (
                                                         <span
@@ -1081,6 +1144,19 @@ export default function AllEntries() {
                                                     {freight > 0 ? `Landed: ${formatCurrency(landed, settings)}/t` : `Fare: Nil`}
                                                 </span>
                                             </div>
+
+                                            {isPartiallyUsed && (
+                                                <div style={{ marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#FF9500', fontWeight: 600 }}>
+                                                    <span>{lotStock.usedWeight.toFixed(1)}t dispatched</span>
+                                                    <span>•</span>
+                                                    <span>{lotStock.remainingWeight.toFixed(2)}t left in yard</span>
+                                                </div>
+                                            )}
+                                            {isFullyAllocated && (
+                                                <div style={{ marginTop: 4, fontSize: 11, color: 'var(--label-tertiary)' }}>
+                                                    All {weight.toFixed(1)}t dispatched · 0t remaining in yard
+                                                </div>
+                                            )}
                                         </div>
 
                                         <ChevronRight className="ios-chevron" strokeWidth={2.5} style={{ flexShrink: 0 }} />

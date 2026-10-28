@@ -54,6 +54,15 @@ export default function SupplierInwardSheet({
   const [weight, setWeight] = useState('');
   const [rate, setRate] = useState('');
   const [fare, setFare] = useState('');
+  const [paidOnSpot, setPaidOnSpot] = useState(
+    existingLot?.paidOnSpot ? String(existingLot.paidOnSpot) : ''
+  );
+  const [paidOnSpotMode, setPaidOnSpotMode] = useState<'cash' | 'bank' | 'online' | 'cheque'>(
+    existingLot?.paidOnSpotMode || 'cash'
+  );
+  const [paidOnSpotNote, setPaidOnSpotNote] = useState(
+    existingLot?.paidOnSpotNote || ''
+  );
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -142,6 +151,9 @@ export default function SupplierInwardSheet({
       const f = existingLot.freightCost;
       setFare(f !== undefined && f !== null && f !== 0 ? String(f) : '');
       setNotes(existingLot.notes || '');
+      setPaidOnSpot(existingLot.paidOnSpot ? String(existingLot.paidOnSpot) : '');
+      setPaidOnSpotMode(existingLot.paidOnSpotMode || 'cash');
+      setPaidOnSpotNote(existingLot.paidOnSpotNote || '');
 
       if (lotMat.pricingModel === 'purity') {
         if (existingLot.grade && existingLot.grade.includes('%')) {
@@ -194,6 +206,9 @@ export default function SupplierInwardSheet({
       setWeight('');
       setRate(mat.pricingModel !== 'purity' && mat.defaultRate ? String(mat.defaultRate) : '');
       setFare('');
+      setPaidOnSpot('');
+      setPaidOnSpotMode('cash');
+      setPaidOnSpotNote('');
       setNotes('');
       setRatePerPoint(String(mat.defaultRate || 116));
       setPurityPercent('30');
@@ -296,6 +311,10 @@ export default function SupplierInwardSheet({
         grade: isPurityPricing && pricingMode === 'purity'
           ? `${parsedPurity}% ${activeMaterial.qualityLabel || 'Purity'}`
           : undefined,
+        paidOnSpot: cleanNumber(paidOnSpot) > 0 ? cleanNumber(paidOnSpot) : undefined,
+        paidOnSpotMode: cleanNumber(paidOnSpot) > 0 ? paidOnSpotMode : undefined,
+        paidOnSpotNote: cleanNumber(paidOnSpot) > 0 ? (paidOnSpotNote.trim() || undefined) : undefined,
+        linkedPaymentId: existingLot?.linkedPaymentId,
         notes: notes.trim() || undefined,
       });
       playSuccessSound();
@@ -876,6 +895,96 @@ export default function SupplierInwardSheet({
                   {curSym} {landedRate.toFixed(2)}
                 </div>
               </div>
+            </div>
+          </div>
+
+          {/* On-the-spot Payment (Optional) */}
+          <div className="ios-group">
+            <div className="ios-group-title" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Banknote size={15} /> Payment Paid on Spot (Optional)
+            </div>
+            <div className="ios-card-grouped" style={{ marginBottom: 16 }}>
+              <div className="ios-cell" style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <div style={{ fontSize: 15, color: 'var(--label-primary)' }}>Amount Paid</div>
+                  <div style={{ fontSize: 11, color: 'var(--label-secondary)' }}>Cash / transfer paid to supplier or truck</div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 15, color: 'var(--label-secondary)' }}>{curSym}</span>
+                  <NumericInput
+                    placeholder="0"
+                    value={paidOnSpot}
+                    onChange={setPaidOnSpot}
+                    style={{
+                      border: 'none',
+                      outline: 'none',
+                      background: 'transparent',
+                      fontSize: 16,
+                      fontWeight: 700,
+                      color: 'var(--label-primary)',
+                      textAlign: 'right',
+                      maxWidth: 140,
+                    }}
+                    className="tabular-nums"
+                  />
+                </div>
+              </div>
+
+              {Boolean(cleanNumber(paidOnSpot) > 0) && (
+                <>
+                  <div className="ios-separator with-glyph" style={{ left: 16 }} />
+                  <div className="ios-cell" style={{ padding: '10px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--label-secondary)' }}>Payment Method</span>
+                    <div className="ios-segmented-control" style={{ margin: 0 }}>
+                      {(['cash', 'bank', 'online', 'cheque'] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          className={`ios-segmented-item ${paidOnSpotMode === mode ? 'active' : ''}`}
+                          onClick={() => {
+                            playPopSound();
+                            setPaidOnSpotMode(mode);
+                          }}
+                        >
+                          {mode.toUpperCase()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="ios-separator with-glyph" style={{ left: 16 }} />
+                  <div className="ios-cell" style={{ padding: '10px 16px' }}>
+                    <input
+                      type="text"
+                      placeholder="Payment note / reference (e.g. Driver cash advance)"
+                      value={paidOnSpotNote}
+                      onChange={(e) => setPaidOnSpotNote(e.target.value)}
+                      style={{
+                        width: '100%',
+                        border: 'none',
+                        outline: 'none',
+                        background: 'transparent',
+                        fontSize: 14,
+                        color: 'var(--label-primary)',
+                      }}
+                    />
+                  </div>
+
+                  <div className="ios-separator with-glyph" style={{ left: 16 }} />
+                  <div className="ios-cell" style={{ padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 13, color: 'var(--label-secondary)' }}>Remaining Inward Due</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: Math.max(0, totalValue - cleanNumber(paidOnSpot)) > 0 ? '#FF9500' : 'var(--ios-green)' }} className="tabular-nums">
+                      {curSym} {formatAmountNumber(Math.max(0, totalValue - cleanNumber(paidOnSpot)), settings)}
+                      {Math.max(0, totalValue - cleanNumber(paidOnSpot)) === 0 && ' (Settled)'}
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="ios-group-footnote" style={{ padding: '0 16px 8px' }}>
+              {cleanNumber(paidOnSpot) > 0
+                ? 'A payment entry will be automatically recorded in the supplier\'s ledger upon saving.'
+                : 'Leave 0 or empty if payment will be settled later.'}
             </div>
           </div>
 

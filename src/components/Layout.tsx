@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import IOSAppLockScreen from './IOSAppLockScreen';
 import PWAInstallPrompt from './PWAInstallPrompt';
+import WhatsNewModal from './WhatsNewModal';
 import DesktopSidebar from './DesktopSidebar';
 import DesktopTopNav from './DesktopTopNav';
 import { recordActivity, evaluateLockOnResume, purgeRemovedRecoveryKeyArtifacts } from '../utils/securityLock';
@@ -607,6 +608,9 @@ export default function Layout() {
 
         {/* Web-only installation guidance; hidden in Capacitor and standalone mode. */}
         <PWAInstallPrompt />
+
+        {/* Release Notes & What's New Liquid Glass Modal */}
+        <WhatsNewModal />
       </div>
     </div>
   );

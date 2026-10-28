@@ -62,8 +62,9 @@ import {
   Lightbulb,
   History,
   Database,
-  // Sparkles,
+  Sparkles,
 } from 'lucide-react';
+import { CURRENT_WHATS_NEW_VERSION } from '../components/WhatsNewModal';
 import { triggerConfetti, playSuccessSound, playPopSound, playCashChime } from '../utils/delight';
 import { exportDatabaseBackupJson, exportSyncConflictHistoryJson } from '../utils/exportSharing';
 import { processImageFile } from '../utils/imageUtils';
@@ -1594,7 +1595,7 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* ── ACCORDION 4: Business Profile & Invoicing ── */}
+      {/* ── ACCORDION 2: Business Profile & Invoicing ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
           <div
@@ -1952,7 +1953,7 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* ── ACCORDION 2: Security & App Lock (Fingerprint + Passcode) ── */}
+      {/* ── ACCORDION 3: Security & App Lock (Fingerprint + Passcode) ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
           <div
@@ -2188,7 +2189,7 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* ── ACCORDION 3: Materials & Pricing ── */}
+      {/* ── ACCORDION 4: Materials & Pricing ── */}
       <div className="ios-group" style={{ marginBottom: 14 }}>
         <div className="ios-card-grouped" style={{ overflow: 'hidden' }}>
           <div
@@ -2884,6 +2885,37 @@ export default function Settings() {
               </div>
             </div>
           )}
+        </div>
+
+        {/* App Version & Release Notes Preview */}
+        <div style={{ marginTop: 24, textAlign: 'center', paddingBottom: 28 }}>
+          <div style={{ fontSize: 13, color: 'var(--label-secondary)', fontWeight: 500, letterSpacing: '-0.1px' }}>
+            Factory Ledger v{CURRENT_WHATS_NEW_VERSION}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              playPopSound();
+              window.dispatchEvent(new CustomEvent('open-whats-new'));
+            }}
+            style={{
+              marginTop: 6,
+              background: 'none',
+              border: 'none',
+              color: 'var(--ios-blue)',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 5,
+              padding: '6px 12px',
+              borderRadius: 8,
+            }}
+          >
+            <Sparkles size={14} strokeWidth={2.2} />
+            <span>Preview What&apos;s New</span>
+          </button>
         </div>
       </div>
 

@@ -212,6 +212,41 @@ export const DispatchReceipt = React.forwardRef<HTMLDivElement, DispatchReceiptP
           />
         </ReceiptSection>
 
+        {/* ─── Payment & Balance Breakdown (if recorded) ─── */}
+        {Boolean(dispatch.paidOnSpot && dispatch.paidOnSpot > 0) && (() => {
+          const paidSpot = dispatch.paidOnSpot || 0;
+          const due = Math.max(0, settlement.totalRevenue - paidSpot);
+          return (
+            <ReceiptSection title="Payment and Account Balance">
+              <ReceiptRow
+                label="Total Consignment Invoiced"
+                value={money(settlement.totalRevenue)}
+              />
+              <ReceiptRow
+                label={`Payment Received on Spot (${(dispatch.paidOnSpotMode || 'cash').toUpperCase()})`}
+                value={`− ${money(paidSpot)}`}
+                labelColor={RECEIPT_COLORS.green}
+                valueColor={RECEIPT_COLORS.green}
+                strong
+              />
+              <ReceiptRow
+                label="Remaining Consignment Due"
+                value={money(due)}
+                strong
+                valueColor={due > 0 ? RECEIPT_COLORS.ink : RECEIPT_COLORS.green}
+              />
+              {dispatch.paidOnSpotNote && (
+                <ReceiptRow
+                  label="Payment Note"
+                  value={dispatch.paidOnSpotNote}
+                  labelColor={RECEIPT_COLORS.muted}
+                  valueColor={RECEIPT_COLORS.secondary}
+                />
+              )}
+            </ReceiptSection>
+          );
+        })()}
+
         {dispatch.notes?.trim() && (
           <div
             style={{

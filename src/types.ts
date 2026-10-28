@@ -98,6 +98,10 @@ export interface Dispatch {
   taxSalesPercent?: number; // Snapshot of sales tax % (e.g. 18) when dispatch was saved
   taxIncomePercent?: number; // Snapshot of income tax % (e.g. 5 or 5.5) when dispatch was saved
   dieselRateAdjustment?: number; // Diesel Escalation / De-escalation adjustment per ton (+ for premium, - for deduction)
+  paidOnSpot?: number; // On-the-spot payment received (cash/bank/cheque/online)
+  paidOnSpotMode?: 'bank' | 'cash' | 'cheque' | 'online';
+  paidOnSpotNote?: string;
+  linkedPaymentId?: string; // Auto-generated linked payment record ID in ledger
   notes?: string;
   status?: DispatchStatus;
   settledAt?: number;
@@ -137,6 +141,8 @@ export interface Payment {
   partyId: string;
   supplierId?: string; // Explicit link when payment is paid to a supplier
   mineId?: string; // Explicit link when payment is paid to a mine
+  linkedDispatchId?: string; // Explicit link when payment is tied to an on-the-spot truck dispatch
+  linkedLotId?: string; // Explicit link when payment is tied to an on-the-spot inward delivery
   date: string;
   amount: number;
   type: 'received' | 'paid';
@@ -245,6 +251,10 @@ export interface InventoryLot {
   targetGcv?: number;
   truckNumber?: string;
   mineSource?: string;
+  paidOnSpot?: number; // On-the-spot payment paid to supplier/truck
+  paidOnSpotMode?: 'bank' | 'cash' | 'cheque' | 'online';
+  paidOnSpotNote?: string;
+  linkedPaymentId?: string; // Auto-generated linked payment record ID in ledger
   notes?: string;
   createdAt: number;
   updatedAt: number;
